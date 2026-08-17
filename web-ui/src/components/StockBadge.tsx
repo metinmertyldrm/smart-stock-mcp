@@ -1,0 +1,2 @@
+import {AlertCircle,CheckCircle2,XCircle} from 'lucide-react';import type {Product} from '../types';import {stockLabel,stockState} from '../utils/format';
+export function StockBadge({product}:{product:Product}){const s=stockState(product);const styles={out:'bg-red-100 text-red-700',critical:'bg-orange-100 text-orange-700',low:'bg-amber-100 text-amber-700',healthy:'bg-emerald-100 text-emerald-700'};const Icon=s==='healthy'?CheckCircle2:s==='out'?XCircle:AlertCircle;return <span className={`badge ${styles[s]}`}><Icon size={13}/>{stockLabel[s]}</span>}

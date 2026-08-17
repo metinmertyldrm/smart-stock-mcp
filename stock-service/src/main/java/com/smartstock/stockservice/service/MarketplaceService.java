@@ -29,6 +29,18 @@ public class MarketplaceService {
         return sellerRepository.findAll();
     }
 
+    public List<MarketplacePurchaseDraft> getAllDrafts() {
+        return draftRepository.findAll();
+    }
+
+    public Optional<MarketplacePurchaseDraft> getDraft(Long id) {
+        return draftRepository.findById(id);
+    }
+
+    public List<MarketplaceOrder> getAllOrders() {
+        return orderRepository.findAll();
+    }
+
     public List<MarketplaceOffer> searchOffers(String query) {
         if (query == null || query.trim().isEmpty()) {
             return offerRepository.findAll();
