@@ -15,7 +15,8 @@ from pydantic import BaseModel, Field
 from app import (MARKETPLACE_SERVER_PATH, STOCK_SERVER_PATH, CachedProcurementPlan,
                  ConversationState, clean_tool_results_for_reasoning, execute_plan,
                  format_final_answer, format_procurement_plan, format_purchase_draft,
-                 get_execution_plan_prompt, is_plan_valid, parse_execution_plan,
+                 build_repair_instruction, get_execution_plan_prompt, is_plan_valid,
+                 parse_execution_plan,
                  resolve_step_arguments)
 from llm import LLMService
 from mcp_client import MCPClient
@@ -152,16 +153,19 @@ class AgentApplication:
         tools = await self.client.list_tools()
         names = {t.name for t in tools}
         cached = {k: v for k, v in {"last_cheapest_plan": state.last_cheapest_plan, "last_fastest_plan": state.last_fastest_plan}.items() if is_plan_valid(v)}
-        raw = self.llm.generate([{"role": "system", "content": get_execution_plan_prompt(tools, state.last_plan, state, cached)}, *state.history, {"role": "user", "content": message}])
+        system_prompt = get_execution_plan_prompt(tools, state.last_plan, state, cached)
+        raw = self.llm.generate([{"role": "system", "content": system_prompt}, *state.history, {"role": "user", "content": message}])
         plan = parse_execution_plan(raw)
         if permission == "PLAN" and any(s.get("tool") in WRITE_TOOLS for s in plan.get("steps", [])):
             raise HTTPException(403, "Salt okunur istekte yazma işlemi engellendi.")
         self.store.add_message(conversation_id, "user", message)
         started = time.perf_counter()
         execution = await execute_plan(plan, self.client, names, state)
+        if not execution.get("success"):
+            plan, execution = await self.repair(system_prompt, message, plan, execution, names, state, permission, conversation_id)
         trace = []
-        for step in plan.get("steps", []):
-            sid = step.get("id", "step")
+        for index, step in enumerate(plan.get("steps", [])):
+            sid = step.get("id") or f"step_{index + 1}"
             result = execution.get("results", {}).get(sid)
             failed = execution.get("failed_step") == sid
             trace.append({"stepId": sid, "tool": step.get("tool"), "arguments": step.get("arguments", {}), "status": "failed" if failed else "success", "resultSummary": summary(execution.get("error") if failed else result), "durationMs": round((time.perf_counter() - started) * 1000 / max(1, len(plan.get("steps", []))))})
@@ -205,6 +209,33 @@ class AgentApplication:
         response = {"conversationId": conversation_id, "permissionLevel": permission, "plan": plan, "trace": trace, "finalAnswer": answer, "pendingDraftId": state.pending_draft_id}
         self.store.add_message(conversation_id, "assistant", answer, "success" if execution.get("success") else "failed", response)
         return response
+
+    async def repair(self, system_prompt, message, plan, execution, names, state, permission, conversation_id):
+        """Basarisiz plani bir kez LLM'e geri verip duzeltilmis planla yeniden dener."""
+        logger.info("Plan failed at step=%s error=%s; attempting repair conversation_id=%s",
+                    execution.get("failed_step"), execution.get("error"), conversation_id)
+        try:
+            repaired_raw = self.llm.generate([
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": build_repair_instruction(message, plan, execution, plan.get("goal", "").upper())},
+            ])
+            repaired = parse_execution_plan(repaired_raw)
+        except Exception:
+            logger.exception("Plan repair could not be parsed conversation_id=%s", conversation_id)
+            return plan, execution
+
+        if permission == "PLAN" and any(s.get("tool") in WRITE_TOOLS for s in repaired.get("steps", [])):
+            raise HTTPException(403, "Salt okunur istekte yazma islemi engellendi.")
+
+        try:
+            repaired_execution = await execute_plan(repaired, self.client, names, state)
+        except Exception:
+            logger.exception("Repaired plan execution failed conversation_id=%s", conversation_id)
+            return plan, execution
+
+        if repaired_execution.get("success"):
+            return repaired, repaired_execution
+        return plan, execution
 
     async def confirm(self, conversation_id, owner_id="anonymous"):
         self.store._owned(conversation_id, owner_id)

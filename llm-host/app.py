@@ -1418,6 +1418,51 @@ def prepare_tool_result_for_llm(tool_name: str, result_str: str) -> str:
 
 
 
+def build_repair_instruction(user_query: str, plan: dict, execution: dict, goal: str) -> str:
+    """Basarisiz bir plan icin LLM'e verilecek onarim talimatini uretir.
+
+    Hem CLI dongusu hem de web_api ayni talimati kullanir; tek kaynak.
+    """
+    rules_list = [
+        "- Preserve the user intent.",
+        f"- Preserve the original plan goal: {goal}.",
+        "- Use only argument names present in the tool schema.",
+        "- Never repeat the same invalid arguments.",
+        "- Every tool call must include ALL required arguments from its schema. If a required argument (such as 'items') must come from another tool, add that retrieval step first and reference it with $from. Never call a tool with empty arguments.",
+        "- Every tool call must be a separate step with a unique step ID (e.g. step_1, step_2). Do not embed tool calls/functions inside $from. The $from reference must strictly start with a valid step ID of a preceding step (e.g., 'step_1.products.0.id').",
+    ]
+    if goal in ("DRAFT", "ORDER"):
+        rules_list.extend([
+            "- Do not rebuild an existing procurement plan during a draft/order repair.",
+            "- Preserve the selected products, filters, seller ratings, and objective.",
+            "- Repair only the invalid draft conversion.",
+            "- Never replace DRAFT intent with PLAN.",
+            "- If the source is products, do not use replenishments_to_items.",
+        ])
+
+    repair_rules_str = "\n".join(rules_list)
+
+    return (
+        f"Original request:\n{user_query}\n\n"
+        f"Previous execution plan:\n"
+        f"{json.dumps(plan, ensure_ascii=False)}\n\n"
+        f"Execution failed at:\n"
+        f"{json.dumps(execution, ensure_ascii=False, default=str)}\n\n"
+        "Create a corrected execution plan. "
+        "Do not repeat the failed call with identical arguments.\n"
+        "Rules for repair:\n"
+        f"{repair_rules_str}\n"
+        "- FILTER PLACEMENT RULES:\n"
+        "  1. Product category filters belong to stock/replenishment tools (e.g., category parameter in calculate_replenishment, like calculate_replenishment(category='Elektronik')).\n"
+        "  2. Seller rating filters belong only to marketplace procurement tools (e.g., filters.min_rating in create_procurement_plan).\n"
+        "  3. Never pass category_name or category to create_procurement_plan.\n"
+        "  4. Never pass min_rating or filters to list_low_stock.\n"
+        "  5. Use only exact argument names defined in each tool schema.\n"
+        "  6. Do not move an invalid argument to another tool unless that tool schema explicitly supports it.\n"
+        "  7. For category filtering of low/critical/replenishment stock, use calculate_replenishment(category=\"Elektronik\") instead of list_low_stock."
+    )
+
+
 async def main():
     print("=" * 60)
     print("Smart Stock & Procurement AI Agent Host Started")
@@ -1530,47 +1575,11 @@ async def main():
                     print(f"\n[PLAN EXECUTOR HATA] Adım '{execution.get('failed_step')}' ({execution.get('failed_tool')}) başarısız oldu: {execution.get('error')}")
                     print("[AI Planı Onarıyor...]")
                     
-                    rules_list = [
-                        "- Preserve the user intent.",
-                        f"- Preserve the original plan goal: {goal}.",
-                        "- Use only argument names present in the tool schema.",
-                        "- Never repeat the same invalid arguments.",
-                        "- Every tool call must be a separate step with a unique step ID (e.g. step_1, step_2). Do not embed tool calls/functions inside $from. The $from reference must strictly start with a valid step ID of a preceding step (e.g., 'step_1.products.0.id')."
-                    ]
-                    if goal in ("DRAFT", "ORDER"):
-                        rules_list.extend([
-                            "- Do not rebuild an existing procurement plan during a draft/order repair.",
-                            "- Preserve the selected products, filters, seller ratings, and objective.",
-                            "- Repair only the invalid draft conversion.",
-                            "- Never replace DRAFT intent with PLAN.",
-                            "- If the source is products, do not use replenishments_to_items.",
-                        ])
-                    
-                    repair_rules_str = "\n".join(rules_list)
-
                     repair_messages = [
                         {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": (
-                            f"Original request:\n{user_query}\n\n"
-                            f"Previous execution plan:\n"
-                            f"{json.dumps(plan, ensure_ascii=False)}\n\n"
-                            f"Execution failed at:\n"
-                            f"{json.dumps(execution, ensure_ascii=False)}\n\n"
-                            "Create a corrected execution plan. "
-                            "Do not repeat the failed call with identical arguments.\n"
-                            "Rules for repair:\n"
-                            f"{repair_rules_str}\n"
-                            "- FILTER PLACEMENT RULES:\n"
-                            "  1. Product category filters belong to stock/replenishment tools (e.g., category parameter in calculate_replenishment, like calculate_replenishment(category='Elektronik')).\n"
-                            "  2. Seller rating filters belong only to marketplace procurement tools (e.g., filters.min_rating in create_procurement_plan).\n"
-                            "  3. Never pass category_name or category to create_procurement_plan.\n"
-                            "  4. Never pass min_rating or filters to list_low_stock.\n"
-                            "  5. Use only exact argument names defined in each tool schema.\n"
-                            "  6. Do not move an invalid argument to another tool unless that tool schema explicitly supports it.\n"
-                            "  7. For category filtering of low/critical/replenishment stock, use calculate_replenishment(category=\"Elektronik\") instead of list_low_stock."
-                        )}
+                        {"role": "user", "content": build_repair_instruction(user_query, plan, execution, goal)}
                     ]
-                    
+
                     repaired_raw = llm.generate(repair_messages)
                     print("\n[LLM ONARILMIŞ PLÂN CEVABI]")
                     print(repr(repaired_raw))

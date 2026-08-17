@@ -35,6 +35,9 @@ def compact_schema(value):
         else:
             result[key] = compact_schema(item)
 
+    return result
+
+
 def compact_plan_for_prompt(plan):
     if not plan:
         return None
