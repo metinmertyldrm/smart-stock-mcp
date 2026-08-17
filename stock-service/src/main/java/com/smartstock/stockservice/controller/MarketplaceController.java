@@ -14,7 +14,6 @@ import java.util.stream.Collectors;
 @RestController
 @RequestMapping("/api/marketplace")
 @RequiredArgsConstructor
-@CrossOrigin(origins = "*")
 public class MarketplaceController {
 
     private final MarketplaceService marketplaceService;
@@ -58,6 +57,17 @@ public class MarketplaceController {
         }
     }
 
+    @GetMapping("/drafts")
+    public ResponseEntity<List<MarketplacePurchaseDraftResponseDto>> getDrafts() {
+        return ResponseEntity.ok(marketplaceService.getAllDrafts().stream().map(this::mapToDraftDto).toList());
+    }
+
+    @GetMapping("/drafts/{draftId}")
+    public ResponseEntity<MarketplacePurchaseDraftResponseDto> getDraft(@PathVariable Long draftId) {
+        return marketplaceService.getDraft(draftId).map(this::mapToDraftDto)
+                .map(ResponseEntity::ok).orElse(ResponseEntity.notFound().build());
+    }
+
     @PostMapping("/orders")
     public ResponseEntity<?> placeOrder(@RequestBody PlaceOrderRequestDto request) {
         try {
@@ -77,6 +87,11 @@ public class MarketplaceController {
                 .orElse(ResponseEntity.notFound().build());
     }
 
+    @GetMapping("/orders")
+    public ResponseEntity<List<MarketplaceOrderResponseDto>> getOrders() {
+        return ResponseEntity.ok(marketplaceService.getAllOrders().stream().map(this::mapToOrderDto).toList());
+    }
+
     private MarketplacePurchaseDraftResponseDto mapToDraftDto(MarketplacePurchaseDraft draft) {
         List<MarketplacePurchaseDraftItemResponseDto> items = draft.getItems().stream().map(item -> 
             MarketplacePurchaseDraftItemResponseDto.builder()
@@ -94,6 +109,7 @@ public class MarketplaceController {
                 .id(draft.getId())
                 .totalCost(draft.getTotalCost())
                 .status(draft.getStatus())
+                .createdAt(draft.getCreatedAt())
                 .items(items)
                 .build();
     }

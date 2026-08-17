@@ -186,10 +186,73 @@ The Spring Boot backend (`stock-service`) provides the following REST API endpoi
 
 ## Future Improvements
 
-* **Web UI Dashboard:** Build a modern frontend interface (React/Vite) to visually monitor warehouse status, current drafts, and LLM reasoning steps.
+* ✅ **Web UI Dashboard:** Completed — responsive React/Vite operations dashboard with stock, procurement, and safe AI execution trace views.
 * **Real Marketplace Integrations:** Connect MCP tools to live sandbox APIs of popular e-commerce platforms (Amazon, eBay, local marketplaces).
 * **AI Demand Forecasting:** Use historical warehouse data to predict future stock shortages before they drop below critical thresholds.
 * **Multi-Agent Negotiation:** Enable a seller agent and buyer agent to dynamically negotiate prices for bulk orders.
 
 ---
 
+
+## Web UI Dashboard (Completed)
+
+The responsive React/Vite dashboard in [`web-ui`](web-ui) provides a Turkish operations interface with:
+
+- independent, fault-tolerant KPI widgets and a stock-health chart;
+- searchable/filterable inventory, visual stock levels, and product details;
+- real purchase-draft details and an explicit confirmation gate before order creation;
+- separate marketplace and incoming replenishment order views;
+- an AI Operations Center showing the structured execution plan and observable MCP execution trace (never private chain-of-thought).
+
+### Web UI requirements and configuration
+
+Install Node.js 20+ and copy the environment template. These values are public service locations only; never place secrets in `VITE_*` variables.
+
+```bash
+cd web-ui
+cp .env.example .env
+npm install
+```
+
+```dotenv
+VITE_API_BASE_URL=http://localhost:8081
+VITE_LLM_HOST_URL=http://localhost:8000
+```
+
+For browser access, configure allowed origins on the services when needed:
+
+```bash
+export CORS_ALLOWED_ORIGINS=http://localhost:5173
+export LLM_CORS_ALLOWED_ORIGINS=http://localhost:5173
+```
+
+### Recommended startup order and ports
+
+1. Start PostgreSQL, then Spring Boot (`cd stock-service && mvn spring-boot:run`) — **8081**.
+2. Start Ollama (`ollama serve`) and ensure `qwen3:8b` is installed — **11434**.
+3. Start the web-capable LLM host (`cd llm-host && uvicorn web_api:app --host 0.0.0.0 --port 8000`) — **8000**. The existing `python app.py` CLI remains available.
+4. Start the dashboard (`cd web-ui && npm run dev`) — **5173**.
+
+### Quality checks
+
+```bash
+cd web-ui
+npm run lint
+npm run test
+npm run build
+
+cd ../stock-service
+mvn test
+
+cd ..
+python -m unittest discover -s llm-host -p 'test_*.py'
+python -m py_compile llm-host/*.py
+```
+
+### Dashboard REST endpoints
+
+The dashboard additionally consumes:
+
+- `GET /api/marketplace/drafts` and `GET /api/marketplace/drafts/{draftId}`
+- `GET /api/marketplace/orders`
+- `GET /api/health`, `POST /api/chat`, conversation detail/confirmation/deletion under the LLM host `/api/conversations/{conversationId}` resource

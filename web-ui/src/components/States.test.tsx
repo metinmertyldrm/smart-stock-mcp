@@ -1,0 +1,2 @@
+import {render,screen} from '@testing-library/react';import {describe,expect,it} from 'vitest';import {Empty,ErrorState,Loading} from './States';
+describe('states',()=>{it('loading',()=>{render(<Loading/>);expect(screen.getByLabelText('Yükleniyor')).toBeInTheDocument()});it('error',()=>{render(<ErrorState message="Bağlantı yok"/>);expect(screen.getByRole('alert')).toHaveTextContent('Bağlantı yok')});it('empty',()=>{render(<Empty/>);expect(screen.getByText('Henüz veri yok')).toBeInTheDocument()})});
