@@ -867,6 +867,12 @@ async def execute_plan(plan: dict, client: MCPClient, available_tool_names: set[
                     if category.lower().strip() in invalid_cats:
                         arguments.pop("category", None)
 
+            # Category is an inventory filter, never a marketplace argument. Older
+            # model plans occasionally leaked it into strict marketplace schemas.
+            if tool_name in {"create_procurement_plan", "compare_offers", "search_offers"}:
+                arguments.pop("category", None)
+                arguments.pop("category_name", None)
+
             # Date validation
             expected_date_str = arguments.get("expected_delivery_date") or arguments.get("expectedDeliveryDate")
             if expected_date_str:
@@ -1706,4 +1712,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\nKapatılıyor...")
-                     
+
