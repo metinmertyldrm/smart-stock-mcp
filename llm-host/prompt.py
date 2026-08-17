@@ -180,9 +180,10 @@ EXAMPLES:
 1. "iPhone 4 mü 3 mü almalıyım?" -> goal: REASON, steps:
    - step_1: search_products(arguments: query="iPhone")
    - step_2: calculate_replenishment(arguments: product_id={{"$from": "step_1.products.0.id"}})
-2. "En hızlı teklif pahalı mı?" -> goal: REASON, steps:
+2. "En ucuz ve en hızlı planı karşılaştır" (when cached plans are not present) -> goal: REASON, steps:
    - step_1: calculate_replenishment
    - step_2: create_procurement_plan(arguments: items={{"$from": "step_1.replenishments", "$transform": "replenishments_to_items"}}, objective="CHEAPEST")
+   - step_3: create_procurement_plan(arguments: items={{"$from": "step_1.replenishments", "$transform": "replenishments_to_items"}}, objective="FASTEST")
 3. "Kritik ürünler için satın alma planı hazırla" -> goal: PLAN, steps:
    - step_1: calculate_replenishment
    - step_2: create_procurement_plan(arguments: items={{"$from": "step_1.replenishments", "$transform": "replenishments_to_items"}}, objective="CHEAPEST")
@@ -252,6 +253,7 @@ RULES:
     - Set steps=[] (empty list).
     - Set context_sources=["last_cheapest_plan", "last_fastest_plan"].
     - DO NOT run any tools (no steps).
+    If either cached plan is missing, retrieve the replenishment needs once and call create_procurement_plan twice: first with objective="CHEAPEST", then with objective="FASTEST". Set goal="REASON" so the host compares both tool results.
 19. NO FINAL_RESPONSE:
     NEVER generate or include the "final_response" field in your JSON output. The host system will construct the final response from execution results.
 20. LANGUAGE RULE:
