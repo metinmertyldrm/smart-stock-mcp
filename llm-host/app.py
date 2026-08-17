@@ -839,6 +839,14 @@ async def execute_plan(plan: dict, client: MCPClient, available_tool_names: set[
         }
 
     execution_results = {}
+    # REASON plans may intentionally contain no tool calls and use previously
+    # cached conversation context instead.  Materialize that context as normal
+    # execution results so callers can pass it to the reasoning layer.  This
+    # also avoids indexing an empty steps list when the plan completes.
+    for source in plan.get("context_sources", []):
+        value = getattr(state, source, None) if state is not None else None
+        if value is not None:
+            execution_results[source] = serialize_plan(value)
     for index, step in enumerate(plan.get("steps", [])):
         step_id = step.get("id") or f"step_{index + 1}"
         tool_name = step["tool"]
@@ -944,12 +952,20 @@ async def execute_plan(plan: dict, client: MCPClient, available_tool_names: set[
                 "results": execution_results,
             }
 
+    steps = plan.get("steps", [])
+    if not steps:
+        return {
+            "success": True,
+            "results": execution_results,
+            "last_result": execution_results,
+        }
+
     return {
         "success": True,
         "results": execution_results,
         "last_result": (
-            execution_results.get(plan["steps"][-1].get("id"))
-            or execution_results.get(f"step_{len(plan['steps'])}")
+            execution_results.get(steps[-1].get("id"))
+            or execution_results.get(f"step_{len(steps)}")
         ),
     }
 

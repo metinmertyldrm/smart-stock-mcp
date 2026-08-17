@@ -7,7 +7,8 @@ from unittest.mock import AsyncMock, Mock, patch
 if importlib.util.find_spec("fastapi") is None:
     raise unittest.SkipTest("FastAPI optional dependency is not installed")
 
-from web_api import AgentApplication, ChatRequest, ConversationStore
+from app import CachedProcurementPlan, ConversationState
+from web_api import AgentApplication, ChatRequest, ConversationStore, now
 
 
 class WebApiTest(unittest.TestCase):
@@ -76,6 +77,29 @@ class WebApiTest(unittest.TestCase):
 
         self.assertEqual(response["permissionLevel"], "FULL")
         self.assertIsNone(response["pendingDraftId"])
+
+    def test_cached_plan_comparison_with_no_steps_returns_reasoned_answer(self):
+        conversation = self.store.create("owner", "Karşılaştırma")
+        client = AsyncMock()
+        client.list_tools.return_value = []
+        llm = Mock()
+        llm.generate.side_effect = [
+            '{"type":"execution_plan","goal":"REASON","steps":[],"context_sources":["last_cheapest_plan","last_fastest_plan"]}',
+            "En ucuz plan daha ekonomik, en hızlı plan ise daha erken teslim edilir.",
+        ]
+        agent = AgentApplication(client, llm, self.store)
+        state = agent.states.setdefault(conversation["id"], ConversationState())
+        state.last_cheapest_plan = CachedProcurementPlan("CHEAPEST", [], {"success": True, "total": 100}, now())
+        state.last_fastest_plan = CachedProcurementPlan("FASTEST", [], {"success": True, "total": 120}, now())
+
+        import asyncio
+        response = asyncio.run(agent.chat(conversation["id"], "En ucuz ve en hızlı planı karşılaştır.", "owner"))
+
+        self.assertEqual(response["finalAnswer"], "En ucuz plan daha ekonomik, en hızlı plan ise daha erken teslim edilir.")
+        self.assertEqual(response["trace"], [])
+        reasoning_prompt = llm.generate.call_args_list[1].args[0][0]["content"]
+        self.assertIn("last_cheapest_plan", reasoning_prompt)
+        self.assertIn("last_fastest_plan", reasoning_prompt)
 
 
 if __name__ == "__main__":

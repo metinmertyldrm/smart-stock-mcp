@@ -12,12 +12,14 @@ from fastapi import FastAPI, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from app import (MARKETPLACE_SERVER_PATH, STOCK_SERVER_PATH, ConversationState,
-                 execute_plan, format_final_answer, format_procurement_plan,
-                 format_purchase_draft, get_execution_plan_prompt, is_plan_valid,
-                 parse_execution_plan)
+from app import (MARKETPLACE_SERVER_PATH, STOCK_SERVER_PATH, CachedProcurementPlan,
+                 ConversationState, clean_tool_results_for_reasoning, execute_plan,
+                 format_final_answer, format_procurement_plan, format_purchase_draft,
+                 get_execution_plan_prompt, is_plan_valid, parse_execution_plan,
+                 resolve_step_arguments)
 from llm import LLMService
 from mcp_client import MCPClient
+from prompt import get_reasoning_prompt
 
 WRITE_TOOLS = {"create_purchase_draft", "place_order", "create_incoming_order", "receive_order"}
 WRITE_INTENT_WORDS = ("sipariş", "taslak", "satın al", "oluştur", "place", "draft", "order")
@@ -165,7 +167,34 @@ class AgentApplication:
             trace.append({"stepId": sid, "tool": step.get("tool"), "arguments": step.get("arguments", {}), "status": "failed" if failed else "success", "resultSummary": summary(execution.get("error") if failed else result), "durationMs": round((time.perf_counter() - started) * 1000 / max(1, len(plan.get("steps", []))))})
         final = execution.get("last_result", {})
         last_tool = plan.get("steps", [{}])[-1].get("tool") if plan.get("steps") else None
-        answer = format_purchase_draft(final) if last_tool == "create_purchase_draft" else format_procurement_plan(final) if last_tool == "create_procurement_plan" else format_final_answer(final)
+        if execution.get("success"):
+            for index, step in enumerate(plan.get("steps", [])):
+                if step.get("tool") != "create_procurement_plan":
+                    continue
+                step_id = step.get("id") or f"step_{index + 1}"
+                result = execution.get("results", {}).get(step_id)
+                if not isinstance(result, dict) or result.get("success") is False:
+                    continue
+                arguments = resolve_step_arguments(step.get("arguments", {}), execution["results"], state)
+                cached_plan = CachedProcurementPlan(
+                    objective=arguments.get("objective", "CHEAPEST"),
+                    items=arguments.get("items", []),
+                    result=result,
+                    saved_at=now(),
+                )
+                if cached_plan.objective == "CHEAPEST":
+                    state.last_cheapest_plan = cached_plan
+                elif cached_plan.objective == "FASTEST":
+                    state.last_fastest_plan = cached_plan
+
+        goal = plan.get("goal", "").upper()
+        if execution.get("success") and goal == "REASON":
+            reasoning_data = clean_tool_results_for_reasoning(execution.get("results", {}))
+            answer = self.llm.generate([{"role": "system", "content": get_reasoning_prompt(message, reasoning_data)}]).strip()
+        elif goal == "CHAT":
+            answer = final.get("chat_answer", "")
+        else:
+            answer = format_purchase_draft(final) if last_tool == "create_purchase_draft" else format_procurement_plan(final) if last_tool == "create_procurement_plan" else format_final_answer(final)
         if not execution.get("success"):
             answer = "İşlem tamamlanamadı. Lütfen isteğinizi kontrol edip yeniden deneyin."
         draft_id = next((r.get("draftId") or r.get("draft_id") for r in execution.get("results", {}).values() if isinstance(r, dict) and (r.get("draftId") or r.get("draft_id"))), None)
