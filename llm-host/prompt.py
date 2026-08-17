@@ -186,7 +186,7 @@ EXAMPLES:
 3. "Kritik ürünler için satın alma planı hazırla" -> goal: PLAN, steps:
    - step_1: calculate_replenishment
    - step_2: create_procurement_plan(arguments: items={{"$from": "step_1.replenishments", "$transform": "replenishments_to_items"}}, objective="CHEAPEST")
-4. "iPhone için satın alma planı oluştur" -> goal: DRAFT, steps:
+4. "iPhone için taslak sipariş oluştur" -> goal: DRAFT, steps:
    - step_1: search_products(arguments: query="iPhone")
    - step_2: compare_offers(arguments: product_id={{"$from": "step_1.products.0.id"}}, quantity=1, objective="CHEAPEST")
    - step_3: create_purchase_draft(arguments: items={{"$from": "step_2", "$transform": "plan_to_draft_items"}})
@@ -204,7 +204,11 @@ EXAMPLES:
     - step_1: calculate_replenishment(arguments: category="Elektronik")
     - step_2: create_procurement_plan(arguments: items={{"$from": "step_1.replenishments", "$transform": "replenishments_to_items"}}, objective="CHEAPEST", filters={{"min_rating": 4.5}})
     - step_3: create_purchase_draft(arguments: items={{"$from": "step_2", "$transform": "plan_to_draft_items"}})
-11. "İki planı karşılaştır, farklar nedir?" (when both cheapest and fastest plans are cached) -> goal: REASON, steps: [], context_sources: ["last_cheapest_plan", "last_fastest_plan"]
+11. "Stokta azalan ürünleri bul ve en ucuz tekliften taslak sipariş oluştur" -> goal: DRAFT, steps:
+    - step_1: list_low_stock
+    - step_2: create_procurement_plan(arguments: items={{"$from": "step_1.products", "$transform": "low_stock_products_to_items"}}, objective="CHEAPEST")
+    - step_3: create_purchase_draft(arguments: items={{"$from": "step_2", "$transform": "plan_to_draft_items"}})
+12. "İki planı karşılaştır, farklar nedir?" (when both cheapest and fastest plans are cached) -> goal: REASON, steps: [], context_sources: ["last_cheapest_plan", "last_fastest_plan"]
 
 DYNAMIC REFERENCING: {{"$from": "step_id.path", "$transform": "replenishments_to_items"|"plan_to_draft_items"|"out_of_stock_products_to_items"|"low_stock_products_to_items"}} or {{"$from_context": "last_reference.id"}} or {{"$from_context": "pending_draft_id"}}
 
@@ -230,27 +234,29 @@ RULES:
     - Use only exact argument names defined in each tool schema.
     - Do not move an invalid argument to another tool unless that tool schema explicitly supports it.
     - For category filtering of low/critical/replenishment stock, use calculate_replenishment(category="Elektronik") instead of list_low_stock.
-15. PURCHASE CONFIRMATION RULE:
+15. DRAFT INTENT RULE:
+    If the user explicitly asks to create a draft (e.g., "taslak sipariş oluştur", "taslak oluştur", "create a draft"), set goal="DRAFT", regardless of whether the request also asks to find low-stock products, compare offers, or build a procurement plan first. The final step MUST call create_purchase_draft. A preceding create_procurement_plan step does not make the goal PLAN when draft creation is requested.
+16. PURCHASE CONFIRMATION RULE:
     If the user request is to buy, purchase, convert plan to order, or place order (e.g., "bunları satın al", "bu planı satın al", "siparişe dönüştür", "satın alma işlemini başlat") AND a procurement plan exists in context (e.g. LAST_PLAN or last_cheapest_plan or last_fastest_plan):
     - Set goal="DRAFT" (NOT "ORDER").
     - Do NOT call place_order in this plan.
     - Create the draft using create_purchase_draft, converting the cached plan using {{"$from_context": "last_plan", "$transform": "plan_to_draft_items"}}.
     - The system will then format the draft, save pending_draft_id, and ask the user to confirm.
-16. ORDER PLACEMENT RULE:
+17. ORDER PLACEMENT RULE:
     Only when the user explicitly confirms the draft order (e.g., "onaylıyorum", "evet", "devam et", "siparişi tamamla", "evet, siparişi ver") AND PENDING_DRAFT_ID is present:
     - Set goal="ORDER".
     - Call place_order using draft_id from pending_draft_id, like {{"$from_context": "pending_draft_id"}}.
-17. COMPARISON RULE:
+18. COMPARISON RULE:
     If both LAST_CHEAPEST_PLAN and LAST_FASTEST_PLAN are present in the cached context, and the user asks to compare them, ask which one is better/more logical, or ask about the differences between them (e.g., "ikisini karşılaştır", "hangisi daha mantıklı", "farkları ne"):
     - Set goal="REASON".
     - Set steps=[] (empty list).
     - Set context_sources=["last_cheapest_plan", "last_fastest_plan"].
     - DO NOT run any tools (no steps).
-18. NO FINAL_RESPONSE:
+19. NO FINAL_RESPONSE:
     NEVER generate or include the "final_response" field in your JSON output. The host system will construct the final response from execution results.
-19. LANGUAGE RULE:
+20. LANGUAGE RULE:
     The "answer" and "final_response" fields (including in the assistant history) MUST always be in Turkish. Never generate or output Chinese, English, or any other language for these fields.
-20. ORDER GOAL STEPS RULE:
+21. ORDER GOAL STEPS RULE:
     For the "ORDER" goal, steps MUST NOT be empty. You must include a step calling the 'place_order' tool with the draft_id argument resolved from pending_draft_id.
 
 CONTEXT VS TOOL:
