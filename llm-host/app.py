@@ -567,15 +567,17 @@ def resolve_context_path(state: ConversationState, path: str):
 
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "conversation_state.json")
 
+def serialize_plan(p):
+    """CachedProcurementPlan -> dict. Modul seviyesinde: execute_plan da kullaniyor."""
+    if p is None:
+        return None
+    if isinstance(p, dict):
+        return p
+    return asdict(p)
+
+
 def save_state(state: ConversationState):
     try:
-        def serialize_plan(p):
-            if p is None:
-                return None
-            if isinstance(p, dict):
-                return p
-            return asdict(p)
-
         data = {
             "last_plan": state.last_plan,
             "last_cheapest_plan": serialize_plan(state.last_cheapest_plan),
