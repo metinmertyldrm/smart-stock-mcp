@@ -1,6 +1,10 @@
 server:
   port: 8081
 
+app:
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173}
+
 spring:
   application:
     name: stock-service

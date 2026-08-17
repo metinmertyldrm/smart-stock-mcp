@@ -6,6 +6,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import java.util.List;
+import java.time.LocalDateTime;
 
 @Data
 @NoArgsConstructor
@@ -15,5 +16,6 @@ public class MarketplacePurchaseDraftResponseDto {
     private Long id;
     private Double totalCost;
     private MarketplacePurchaseDraftStatus status;
+    private LocalDateTime createdAt;
     private List<MarketplacePurchaseDraftItemResponseDto> items;
 }
