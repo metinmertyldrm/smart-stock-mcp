@@ -1,7 +1,8 @@
 import importlib.util
 import tempfile
 import unittest
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
 if importlib.util.find_spec("fastapi") is None:
     raise unittest.SkipTest("FastAPI optional dependency is not installed")
@@ -40,6 +41,41 @@ class WebApiTest(unittest.TestCase):
         with self.assertRaises(Exception):
             import asyncio
             asyncio.run(agent.confirm(conversation["id"], "owner"))
+
+    def test_pending_draft_is_restored_from_persisted_conversation(self):
+        conversation = self.store.create("owner", "Sohbet")
+        self.store.add_message(
+            conversation["id"], "assistant", "Taslak hazır.", response={"pendingDraftId": 42}
+        )
+        agent = AgentApplication(AsyncMock(), AsyncMock(), self.store)
+
+        with patch.object(agent, "chat", new=AsyncMock(return_value={"ok": True})) as chat:
+            import asyncio
+            result = asyncio.run(agent.confirm(conversation["id"], "owner"))
+
+        self.assertEqual(result, {"ok": True})
+        chat.assert_awaited_once_with(
+            conversation["id"], "42 numaralı taslağı onayla ve siparişi oluştur", "owner"
+        )
+
+    def test_natural_language_confirmation_allows_pending_write(self):
+        conversation = self.store.create("owner", "Sohbet")
+        self.store.add_message(
+            conversation["id"], "assistant", "Onaylıyor musunuz?", response={"pendingDraftId": 42}
+        )
+        client = AsyncMock()
+        client.list_tools.return_value = [SimpleNamespace(name="place_order")]
+        llm = Mock()
+        llm.generate.return_value = '{"type":"execution_plan","goal":"ORDER","steps":[{"id":"step_1","tool":"place_order","arguments":{"draftId":42}}]}'
+        agent = AgentApplication(client, llm, self.store)
+        execution = {"success": True, "results": {"step_1": {"orderId": 7}}, "last_result": {"orderId": 7}}
+
+        with patch("web_api.execute_plan", new=AsyncMock(return_value=execution)):
+            import asyncio
+            response = asyncio.run(agent.chat(conversation["id"], "onaylıyorum", "owner"))
+
+        self.assertEqual(response["permissionLevel"], "FULL")
+        self.assertIsNone(response["pendingDraftId"])
 
 
 if __name__ == "__main__":

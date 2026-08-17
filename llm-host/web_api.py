@@ -1,5 +1,6 @@
 """Persistent HTTP transport for the Smart Stock agent."""
 import json
+import logging
 import os
 import sqlite3
 import time
@@ -19,7 +20,10 @@ from llm import LLMService
 from mcp_client import MCPClient
 
 WRITE_TOOLS = {"create_purchase_draft", "place_order", "create_incoming_order", "receive_order"}
+WRITE_INTENT_WORDS = ("sipariş", "taslak", "satın al", "oluştur", "place", "draft", "order")
+CONFIRM_INTENT_WORDS = ("evet", "onay", "onayla", "onaylıyorum", "devam", "tamam", "yes", "confirm")
 DB_PATH = os.getenv("LLM_CONVERSATIONS_DB", os.path.join(os.path.dirname(__file__), "conversations.db"))
+logger = logging.getLogger(__name__)
 
 
 def now():
@@ -88,6 +92,17 @@ class ConversationStore:
         rows = self.db.execute("SELECT role,content FROM messages WHERE conversation_id=? AND status='success' ORDER BY created_at DESC LIMIT ?", (conversation_id, limit)).fetchall()
         return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
 
+    def pending_draft(self, conversation_id):
+        rows = self.db.execute(
+            "SELECT response_json FROM messages WHERE conversation_id=? AND response_json IS NOT NULL ORDER BY created_at DESC,id DESC",
+            (conversation_id,),
+        ).fetchall()
+        for row in rows:
+            response = json.loads(row["response_json"])
+            if "pendingDraftId" in response:
+                return response["pendingDraftId"]
+        return None
+
     def delete(self, conversation_id, owner_id):
         self._owned(conversation_id, owner_id)
         self.db.execute("DELETE FROM messages WHERE conversation_id=?", (conversation_id,))
@@ -124,11 +139,14 @@ class AgentApplication:
             raise HTTPException(422, "Mesaj boş olamaz.")
         self.store.ensure(conversation_id, owner_id, message)
         state = self.states.setdefault(conversation_id, ConversationState())
+        if state.pending_draft_id is None:
+            state.pending_draft_id = self.store.pending_draft(conversation_id)
         state.history = self.store.history(conversation_id)
         state.last_user_message = message
-        self.store.add_message(conversation_id, "user", message)
-        write_intent = any(w in message.lower() for w in ["sipariş", "taslak", "satın al", "oluştur", "place", "draft", "order"])
-        permission = "FULL" if write_intent else "PLAN"
+        normalized = message.casefold()
+        write_intent = any(word in normalized for word in WRITE_INTENT_WORDS)
+        confirm_intent = state.pending_draft_id is not None and any(word in normalized for word in CONFIRM_INTENT_WORDS)
+        permission = "FULL" if write_intent or confirm_intent else "PLAN"
         tools = await self.client.list_tools()
         names = {t.name for t in tools}
         cached = {k: v for k, v in {"last_cheapest_plan": state.last_cheapest_plan, "last_fastest_plan": state.last_fastest_plan}.items() if is_plan_valid(v)}
@@ -136,6 +154,7 @@ class AgentApplication:
         plan = parse_execution_plan(raw)
         if permission == "PLAN" and any(s.get("tool") in WRITE_TOOLS for s in plan.get("steps", [])):
             raise HTTPException(403, "Salt okunur istekte yazma işlemi engellendi.")
+        self.store.add_message(conversation_id, "user", message)
         started = time.perf_counter()
         execution = await execute_plan(plan, self.client, names, state)
         trace = []
@@ -152,6 +171,8 @@ class AgentApplication:
         draft_id = next((r.get("draftId") or r.get("draft_id") for r in execution.get("results", {}).values() if isinstance(r, dict) and (r.get("draftId") or r.get("draft_id"))), None)
         if draft_id:
             state.pending_draft_id = int(draft_id)
+        if execution.get("success") and last_tool == "place_order":
+            state.pending_draft_id = None
         response = {"conversationId": conversation_id, "permissionLevel": permission, "plan": plan, "trace": trace, "finalAnswer": answer, "pendingDraftId": state.pending_draft_id}
         self.store.add_message(conversation_id, "assistant", answer, "success" if execution.get("success") else "failed", response)
         return response
@@ -202,13 +223,14 @@ async def create_conversation(body: CreateConversationRequest, x_client_id: str 
 
 @app.post("/api/chat")
 async def chat(body: ChatRequest, x_client_id: str | None = Header(None)):
+    request_id = str(uuid.uuid4())
     try:
         return await app.state.agent.chat(body.conversationId, body.message, owner(x_client_id))
     except HTTPException:
         raise
     except Exception as exc:
-        print(f"[CHAT ERROR] {type(exc).__name__}: {exc}")
-        raise HTTPException(503, "AI servisine şu anda ulaşılamıyor. Lütfen kısa bir süre sonra tekrar deneyin.") from exc
+        logger.exception("Chat request failed request_id=%s conversation_id=%s", request_id, body.conversationId)
+        raise HTTPException(500, f"İşlem beklenmeyen bir hatayla tamamlanamadı. Takip kodu: {request_id}") from exc
 
 
 @app.get("/api/conversations/{conversation_id}")
@@ -218,7 +240,14 @@ async def conversation(conversation_id: str, x_client_id: str | None = Header(No
 
 @app.post("/api/conversations/{conversation_id}/confirm")
 async def confirm(conversation_id: str, x_client_id: str | None = Header(None)):
-    return await app.state.agent.confirm(conversation_id, owner(x_client_id))
+    try:
+        return await app.state.agent.confirm(conversation_id, owner(x_client_id))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        request_id = str(uuid.uuid4())
+        logger.exception("Confirmation failed request_id=%s conversation_id=%s", request_id, conversation_id)
+        raise HTTPException(500, f"Onay işlemi tamamlanamadı. Takip kodu: {request_id}") from exc
 
 
 @app.delete("/api/conversations/{conversation_id}", status_code=204)
