@@ -180,6 +180,28 @@ def parse_execution_plan(text: str) -> dict:
     return parsed
 
 
+def validate_plan_against_state(plan: dict, state) -> None:
+    """Sozdizimsel olarak gecerli ama mevcut duruma aykiri planlari reddeder.
+
+    Modelin kurallara uymasina guvenmek yerine host tarafinda dogruluyoruz;
+    ozellikle siparis verme gibi geri alinamaz adimlarda bu bir guvenlik siniri.
+    """
+    goal = (plan.get("goal") or "").upper()
+    steps = plan.get("steps") or []
+
+    wants_order = goal == "ORDER" or any(
+        step.get("tool") == "place_order" for step in steps if isinstance(step, dict)
+    )
+    if wants_order:
+        pending = getattr(state, "pending_draft_id", None) if state is not None else None
+        if not pending:
+            raise ValueError(
+                "Onay bekleyen bir taslak yok, bu yuzden place_order calistirilamaz. "
+                "Once ihtiyaci hesapla (calculate_replenishment), create_procurement_plan "
+                "ile plani kur ve create_purchase_draft ile taslagi olustur; goal DRAFT olmali."
+            )
+
+
 def replenishments_to_items(value):
     items = []
     for replenishment in value or []:

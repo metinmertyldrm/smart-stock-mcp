@@ -17,7 +17,7 @@ from app import (MARKETPLACE_SERVER_PATH, STOCK_SERVER_PATH, CachedProcurementPl
                  format_final_answer, format_procurement_plan, format_purchase_draft,
                  build_repair_instruction, get_execution_plan_prompt, is_plan_valid,
                  parse_execution_plan,
-                 resolve_step_arguments)
+                 resolve_step_arguments, validate_plan_against_state)
 from llm import LLMService
 from mcp_client import MCPClient
 from prompt import get_reasoning_prompt
@@ -161,9 +161,10 @@ class AgentApplication:
         raw = self.llm.generate([{"role": "system", "content": system_prompt}, *state.history, {"role": "user", "content": message}])
         try:
             plan = parse_execution_plan(raw)
+            validate_plan_against_state(plan, state)
         except ValueError as exc:
             # Dogrulama hatasi execute_plan'den ONCE olusur; onarim dongusu buraya da uygulanmali.
-            plan = self.repair_invalid_plan(system_prompt, message, raw, exc, conversation_id)
+            plan = self.repair_invalid_plan(system_prompt, message, raw, exc, state, conversation_id)
             if plan is None:
                 return self.clarification_response(conversation_id, message, permission, state, exc)
         if permission == "PLAN" and any(s.get("tool") in WRITE_TOOLS for s in plan.get("steps", [])):
@@ -174,11 +175,20 @@ class AgentApplication:
         if not execution.get("success"):
             plan, execution = await self.repair(system_prompt, message, plan, execution, names, state, permission, conversation_id)
         trace = []
+        results = execution.get("results", {})
         for index, step in enumerate(plan.get("steps", [])):
             sid = step.get("id") or f"step_{index + 1}"
-            result = execution.get("results", {}).get(sid)
             failed = execution.get("failed_step") == sid
-            trace.append({"stepId": sid, "tool": step.get("tool"), "arguments": step.get("arguments", {}), "status": "failed" if failed else "success", "resultSummary": summary(execution.get("error") if failed else result), "durationMs": round((time.perf_counter() - started) * 1000 / max(1, len(plan.get("steps", []))))})
+            executed = sid in results
+            # Onceki adim patlayinca sonrakiler hic calismaz; bunlari basarili gostermek yaniltici.
+            status = "failed" if failed else "success" if executed else "skipped"
+            if failed:
+                detail = execution.get("error")
+            elif executed:
+                detail = results.get(sid)
+            else:
+                detail = "Önceki adım başarısız olduğu için çalıştırılmadı."
+            trace.append({"stepId": sid, "tool": step.get("tool"), "arguments": step.get("arguments", {}), "status": status, "resultSummary": summary(detail), "durationMs": round((time.perf_counter() - started) * 1000 / max(1, len(plan.get("steps", []))))})
         final = execution.get("last_result", {})
         last_tool = plan.get("steps", [{}])[-1].get("tool") if plan.get("steps") else None
         if execution.get("success"):
@@ -220,7 +230,7 @@ class AgentApplication:
         self.store.add_message(conversation_id, "assistant", answer, "success" if execution.get("success") else "failed", response)
         return response
 
-    def repair_invalid_plan(self, system_prompt, message, raw, error, conversation_id):
+    def repair_invalid_plan(self, system_prompt, message, raw, error, state, conversation_id):
         """Plan dogrulamadan gecemediginde modele hatayi geri verip bir kez daha dener."""
         logger.info("Plan validation failed (%s); attempting repair conversation_id=%s", error, conversation_id)
         try:
@@ -233,7 +243,9 @@ class AgentApplication:
                     "",
                 )},
             ])
-            return parse_execution_plan(repaired_raw)
+            repaired = parse_execution_plan(repaired_raw)
+            validate_plan_against_state(repaired, state)
+            return repaired
         except Exception:
             logger.exception("Invalid plan could not be repaired conversation_id=%s", conversation_id)
             return None
@@ -270,6 +282,7 @@ class AgentApplication:
                 {"role": "user", "content": build_repair_instruction(message, plan, execution, plan.get("goal", "").upper())},
             ])
             repaired = parse_execution_plan(repaired_raw)
+            validate_plan_against_state(repaired, state)
         except Exception:
             logger.exception("Plan repair could not be parsed conversation_id=%s", conversation_id)
             return plan, execution
