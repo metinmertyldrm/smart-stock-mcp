@@ -1,0 +1,208 @@
+{
+  "olcum_zamani": "2026-08-18T17:24:51",
+  "runs": 1,
+  "sonuclar": [
+    {
+      "summary": {
+        "id": "plan_out_of_stock",
+        "kaynak": "Taslak örnek komut 1",
+        "known_gap": null,
+        "runs": 1,
+        "passed": 1,
+        "distinct_plans": 1,
+        "signatures": [
+          [
+            "PLAN: list_out_of_stock → create_procurement_plan",
+            1
+          ]
+        ],
+        "median_duration": 103.6,
+        "problems": []
+      },
+      "runs": [
+        {
+          "ok": true,
+          "goal": "PLAN",
+          "tools": [
+            "list_out_of_stock",
+            "create_procurement_plan"
+          ],
+          "signature": "PLAN: list_out_of_stock → create_procurement_plan",
+          "problems": [],
+          "duration": 103.59993249999752,
+          "answer": "Satın alma planı başarıyla hazırlandı.\n\n1. Galaxy S24 256GB\n   Gerekli miktar: 8\n   Karşılanan miktar: 8\n   Eksik miktar: 0\n   Satıcı dağılımı:\n   - ElectroShop: 3 adet, birim fiyat 37,200.00 TL, karg"
+        }
+      ]
+    },
+    {
+      "summary": {
+        "id": "total_budget_limit",
+        "kaynak": "Taslak örnek komut 3",
+        "known_gap": "create_procurement_plan toplam bütçe tavanı kabul etmiyor; model kısıtı max_unit_price'a kaydırıyor.",
+        "runs": 1,
+        "passed": 0,
+        "distinct_plans": 1,
+        "signatures": [
+          [
+            "PLAN: calculate_replenishment → create_procurement_plan",
+            1
+          ]
+        ],
+        "median_duration": 132.1,
+        "problems": [
+          "adım başarısız: create_procurement_plan",
+          "argüman verilmemiş: max_total_budget",
+          "kısıt yanlış parametreye yazılmış: max_unit_price=50000"
+        ]
+      },
+      "runs": [
+        {
+          "ok": false,
+          "goal": "PLAN",
+          "tools": [
+            "calculate_replenishment",
+            "create_procurement_plan"
+          ],
+          "signature": "PLAN: calculate_replenishment → create_procurement_plan",
+          "problems": [
+            "adım başarısız: create_procurement_plan",
+            "argüman verilmemiş: max_total_budget",
+            "kısıt yanlış parametreye yazılmış: max_unit_price=50000"
+          ],
+          "duration": 132.1095032000012,
+          "answer": "İşlem tamamlanamadı. Lütfen isteğinizi kontrol edip yeniden deneyin."
+        }
+      ]
+    },
+    {
+      "summary": {
+        "id": "max_delivery_days",
+        "kaynak": "Taslak örnek komut 4",
+        "known_gap": null,
+        "runs": 1,
+        "passed": 0,
+        "distinct_plans": 1,
+        "signatures": [
+          [
+            "PLAN: calculate_replenishment → create_procurement_plan",
+            1
+          ]
+        ],
+        "median_duration": 139.5,
+        "problems": [
+          "adım başarısız: create_procurement_plan"
+        ]
+      },
+      "runs": [
+        {
+          "ok": false,
+          "goal": "PLAN",
+          "tools": [
+            "calculate_replenishment",
+            "create_procurement_plan"
+          ],
+          "signature": "PLAN: calculate_replenishment → create_procurement_plan",
+          "problems": [
+            "adım başarısız: create_procurement_plan"
+          ],
+          "duration": 139.48728309999933,
+          "answer": "İşlem tamamlanamadı. Lütfen isteğinizi kontrol edip yeniden deneyin."
+        }
+      ]
+    },
+    {
+      "summary": {
+        "id": "pending_orders_receive",
+        "kaynak": "Taslak örnek komut 5",
+        "known_gap": "Bekleyen siparişleri listeleyen MCP tool'u yok.",
+        "runs": 1,
+        "passed": 0,
+        "distinct_plans": 1,
+        "signatures": [
+          [
+            "CLARIFY: (tool yok)",
+            1
+          ]
+        ],
+        "median_duration": 112.7,
+        "problems": [
+          "goal 'CLARIFY', beklenen ['INFO', 'REASON', 'PLAN']"
+        ]
+      },
+      "runs": [
+        {
+          "ok": false,
+          "goal": "CLARIFY",
+          "tools": [],
+          "signature": "CLARIFY: (tool yok)",
+          "problems": [
+            "goal 'CLARIFY', beklenen ['INFO', 'REASON', 'PLAN']"
+          ],
+          "duration": 112.68926350000038,
+          "answer": "İsteğinizi çalıştırılabilir bir işlem planına dönüştüremedim. Karşılaştığım sorun: INFO planı sadece salt okunur araçlar içerebilir. Geçersiz araç: receive_order İsteğinizi biraz daha belirgin yazar m"
+        }
+      ]
+    },
+    {
+      "summary": {
+        "id": "balanced_objective",
+        "kaynak": "Taslak örnek komut 6",
+        "known_gap": null,
+        "runs": 1,
+        "passed": 1,
+        "distinct_plans": 1,
+        "signatures": [
+          [
+            "PLAN: calculate_replenishment → create_procurement_plan",
+            1
+          ]
+        ],
+        "median_duration": 74.6,
+        "problems": []
+      },
+      "runs": [
+        {
+          "ok": true,
+          "goal": "PLAN",
+          "tools": [
+            "calculate_replenishment",
+            "create_procurement_plan"
+          ],
+          "signature": "PLAN: calculate_replenishment → create_procurement_plan",
+          "problems": [],
+          "duration": 74.60325920000105,
+          "answer": "Satın alma planı hazırlandı ancak bazı ürünlerin ihtiyacı tamamen karşılanamadı.\n\n1. iPhone 15 Pro 128GB\n   Gerekli miktar: 5\n   Karşılanan miktar: 0\n   Eksik miktar: 5\n   Uygun teklif bulunamadı.\n   "
+        }
+      ]
+    },
+    {
+      "summary": {
+        "id": "compare_cheapest_fastest",
+        "kaynak": "Web arayüzü hazır komutu",
+        "known_gap": null,
+        "runs": 1,
+        "passed": 1,
+        "distinct_plans": 1,
+        "signatures": [
+          [
+            "REASON: (tool yok)",
+            1
+          ]
+        ],
+        "median_duration": 114.1,
+        "problems": []
+      },
+      "runs": [
+        {
+          "ok": true,
+          "goal": "REASON",
+          "tools": [],
+          "signature": "REASON: (tool yok)",
+          "problems": [],
+          "duration": 114.07539240000187,
+          "answer": "İşlem tamamlanamadı. Lütfen isteğinizi kontrol edip yeniden deneyin."
+        }
+      ]
+    }
+  ]
+}
