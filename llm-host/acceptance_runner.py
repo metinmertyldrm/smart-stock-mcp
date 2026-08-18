@@ -246,12 +246,16 @@ def preflight():
     problems = []
     for name, url, hint in checks:
         try:
-            response = requests.get(url, timeout=5)
+            # (baglanti, okuma): baglanti hizli olmali, okuma yavas olabilir
+            # cunku Ollama model yuklerken istekleri bekletir.
+            response = requests.get(url, timeout=(5, 20))
             response.raise_for_status()
             print(f"  [OK ] {name}: {url}")
+        except requests.exceptions.ReadTimeout:
+            # Baglanti kuruldu, servis ayakta; sadece mesgul (model yukleniyor olabilir).
+            print(f"  [YAVAS] {name}: {url} — ayakta ama yanit vermedi, devam ediliyor")
         except Exception as exc:
-            reason = type(exc).__name__
-            print(f"  [YOK] {name}: {url} ({reason})")
+            print(f"  [YOK] {name}: {url} ({type(exc).__name__})")
             problems.append(f"{name} erisilemiyor ({url}). Baslatmak icin: {hint}")
 
     return problems
