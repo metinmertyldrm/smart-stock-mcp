@@ -16,7 +16,7 @@ export function AiPage(){
   const detail=useQuery({queryKey:['ai-conversation',selected],queryFn:()=>endpoints.conversation(selected!),enabled:!!selected});
   const messages=detail.data?.messages||[];
 
-  useEffect(()=>{const url=new URL(location.href);selected?url.searchParams.set('conversation',selected):url.searchParams.delete('conversation');history.replaceState({},'',url)},[selected]);
+  useEffect(()=>{const url=new URL(location.href);if(selected){url.searchParams.set('conversation',selected)}else{url.searchParams.delete('conversation')}history.replaceState({},'',url)},[selected]);
   useEffect(()=>{const node=messageList.current;if(node&&shouldFollow.current)node.scrollTo({top:node.scrollHeight})},[messages.length]);
 
   const refresh=(id=selected)=>{queryClient.invalidateQueries({queryKey:conversationKey});if(id)queryClient.invalidateQueries({queryKey:['ai-conversation',id]})};
