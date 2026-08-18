@@ -135,13 +135,15 @@ def get_execution_plan_prompt(tools_list: list, last_successful_plan: dict | Non
     """
     tools_str = ""
     for tool in tools_list:
-        schema = compact_schema(tool.inputSchema)
+        # Bazi istemciler/testler eksik alanli tool nesnesi verebiliyor; cokmemeli.
+        schema = compact_schema(getattr(tool, "inputSchema", None))
         if isinstance(schema, dict):
             schema.pop("additionalProperties", None)
             if schema.get("type") == "object":
                 schema = schema.get("properties", {})
         schema_json = json.dumps(schema, ensure_ascii=False, separators=(',', ':'))
-        tools_str += f"- {tool.name}: {tool.description} | Arguments: {schema_json}\n"
+        description = getattr(tool, "description", "") or ""
+        tools_str += f"- {tool.name}: {description} | Arguments: {schema_json}\n"
 
     plan_info = ""
     if last_successful_plan:

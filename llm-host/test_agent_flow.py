@@ -1,0 +1,154 @@
+"""web_api.AgentApplication: onarım döngüsü, izin kapısı ve işlem izi."""
+import asyncio
+import json
+import os
+import tempfile
+import unittest
+
+from test_support import install_optional_stubs
+
+install_optional_stubs()
+
+import web_api  # noqa: E402
+from test_support import FakeMCPClient, ScriptedLLM  # noqa: E402
+
+
+def run(coro):
+    return asyncio.run(coro)
+
+
+def temp_store():
+    return web_api.ConversationStore(os.path.join(tempfile.mkdtemp(), "test.db"))
+
+
+INVALID_PLAN = json.dumps({"type": "execution_plan", "goal": "PLAN", "steps": [
+    {"id": "step_1", "tool": "list_low_stock"}]})
+
+VALID_PLAN = json.dumps({"type": "execution_plan", "goal": "PLAN", "steps": [
+    {"id": "step_1", "tool": "list_low_stock", "arguments": {}},
+    {"id": "step_2", "tool": "create_procurement_plan",
+     "arguments": {"items": [{"product_id": 1, "quantity": 8}], "objective": "CHEAPEST"}}]})
+
+EMPTY_ARGS_PLAN = json.dumps({"type": "execution_plan", "goal": "PLAN", "steps": [
+    {"tool": "create_procurement_plan"}]})
+
+STOCK_TOOLS = {
+    "list_low_stock": {"success": True, "products": [{"id": 1, "name": "iPhone"}]},
+    "create_procurement_plan": lambda args: (
+        {"success": True, "overall_total": 100.0, "items": []} if args.get("items")
+        else {"success": False, "error": "No items provided."}),
+}
+
+
+class InvalidPlanRepairTest(unittest.TestCase):
+    """Regresyon: doğrulama hatası eskiden 500 dönüyordu, onarıma girmiyordu."""
+
+    def test_validation_failure_is_repaired(self):
+        client = FakeMCPClient(STOCK_TOOLS)
+        agent = web_api.AgentApplication(client, ScriptedLLM(INVALID_PLAN, VALID_PLAN), temp_store())
+
+        response = run(agent.chat("c1", "kritik ürünler için plan hazırla"))
+
+        self.assertEqual(client.called_tools, ["list_low_stock", "create_procurement_plan"])
+        self.assertNotIn("tamamlanamadı", response["finalAnswer"])
+
+    def test_unrepairable_plan_explains_and_asks(self):
+        """Kullanıcının kararı: önce onar, tutmazsa sor."""
+        agent = web_api.AgentApplication(
+            FakeMCPClient(STOCK_TOOLS), ScriptedLLM(INVALID_PLAN, INVALID_PLAN), temp_store())
+
+        response = run(agent.chat("c1", "kritik ürünler için plan hazırla"))
+
+        self.assertEqual(response["plan"]["goal"], "CLARIFY")
+        self.assertIn("belirgin", response["finalAnswer"])
+
+
+class ExecutionRepairTest(unittest.TestCase):
+    def test_failed_step_triggers_second_attempt(self):
+        client = FakeMCPClient(STOCK_TOOLS)
+        agent = web_api.AgentApplication(client, ScriptedLLM(EMPTY_ARGS_PLAN, VALID_PLAN), temp_store())
+
+        response = run(agent.chat("c1", "kritik ürünler için plan hazırla"))
+
+        self.assertEqual(client.called_tools[0], "create_procurement_plan")
+        self.assertEqual(client.called_tools[-1], "create_procurement_plan")
+        self.assertTrue(all(step["status"] == "success" for step in response["trace"]))
+
+
+class TraceStatusTest(unittest.TestCase):
+    """Regresyon: başarısız ve hiç çalışmamış adımlar 'Başarılı' görünüyordu."""
+
+    def test_failed_step_is_reported_with_real_error(self):
+        agent = web_api.AgentApplication(
+            FakeMCPClient(STOCK_TOOLS), ScriptedLLM(EMPTY_ARGS_PLAN), temp_store())
+
+        response = run(agent.chat("c1", "kritik ürünler için plan hazırla"))
+
+        self.assertEqual(response["trace"][0]["status"], "failed")
+        self.assertIn("No items provided", response["trace"][0]["resultSummary"])
+
+    def test_steps_after_a_failure_are_marked_skipped(self):
+        order_plan = json.dumps({"type": "execution_plan", "goal": "ORDER", "steps": [
+            {"id": "step_1", "tool": "place_order",
+             "arguments": {"draft_id": {"$from_context": "pending_draft_id"}}},
+            {"id": "step_2", "tool": "create_incoming_orders",
+             "arguments": {"items": {"$from": "step_1", "$transform": "order_to_incoming_items"}}}]})
+        client = FakeMCPClient({
+            "place_order": {"success": False, "error": "Draft ID 12 not found."},
+            "create_incoming_orders": {"success": True},
+        })
+        agent = web_api.AgentApplication(client, ScriptedLLM(order_plan), temp_store())
+        state = web_api.ConversationState()
+        state.pending_draft_id = 12
+        agent.states["c1"] = state
+
+        response = run(agent.chat("c1", "onaylıyorum"))
+
+        self.assertEqual([step["status"] for step in response["trace"]], ["failed", "skipped"])
+        self.assertIn("çalıştırılmadı", response["trace"][1]["resultSummary"])
+
+
+class PermissionTest(unittest.TestCase):
+    def test_order_is_blocked_without_pending_draft(self):
+        order_plan = json.dumps({"type": "execution_plan", "goal": "ORDER", "steps": [
+            {"id": "step_1", "tool": "place_order",
+             "arguments": {"draft_id": {"$from_context": "pending_draft_id"}}}]})
+        client = FakeMCPClient({"place_order": {"success": True}})
+        agent = web_api.AgentApplication(client, ScriptedLLM(order_plan), temp_store())
+
+        response = run(agent.chat("c1", "satın al"))
+
+        self.assertEqual(client.called_tools, [])
+        self.assertEqual(response["plan"]["goal"], "CLARIFY")
+
+    def test_write_tools_include_batch_incoming_orders(self):
+        self.assertIn("create_incoming_orders", web_api.WRITE_TOOLS)
+
+    def test_read_only_request_cannot_write(self):
+        draft_plan = json.dumps({"type": "execution_plan", "goal": "DRAFT", "steps": [
+            {"id": "step_1", "tool": "create_purchase_draft", "arguments": {"items": []}}]})
+        client = FakeMCPClient({"create_purchase_draft": {"success": True}})
+        agent = web_api.AgentApplication(client, ScriptedLLM(draft_plan), temp_store())
+
+        with self.assertRaises(Exception):
+            run(agent.chat("c1", "stok durumu nedir"))   # yazma niyeti yok -> PLAN seviyesi
+        self.assertEqual(client.called_tools, [])
+
+
+class HistoryBoundTest(unittest.TestCase):
+    """Geçmiş prompta giriyor; num_ctx taşmasın diye sınırlı olmalı."""
+
+    def test_history_is_capped_by_count_and_length(self):
+        store = temp_store()
+        store.create("owner", "başlık", "c1")
+        for _ in range(30):
+            store.add_message("c1", "assistant", "x" * 2000)
+
+        history = store.history("c1")
+
+        self.assertEqual(len(history), web_api.HISTORY_MESSAGES)
+        self.assertEqual(len(history[0]["content"]), web_api.HISTORY_CHARS)
+
+
+if __name__ == "__main__":
+    unittest.main()

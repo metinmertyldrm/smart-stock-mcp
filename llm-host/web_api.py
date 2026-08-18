@@ -303,7 +303,10 @@ class AgentApplication:
     async def confirm(self, conversation_id, owner_id="anonymous"):
         self.store._owned(conversation_id, owner_id)
         state = self.states.get(conversation_id)
-        draft = state and state.pending_draft_id
+        draft = state.pending_draft_id if state else None
+        if not draft:
+            # Sunucu yeniden baslatilinca bellekteki durum kaybolur; kalici kayda bak.
+            draft = self.store.pending_draft(conversation_id)
         if not draft:
             raise HTTPException(409, "Onay bekleyen taslak bulunamadı.")
         return await self.chat(conversation_id, f"{draft} numaralı taslağı onayla ve siparişi oluştur", owner_id)
