@@ -225,6 +225,38 @@ def summarize(scenario, runs):
 # Koşum
 # --------------------------------------------------------------------------
 
+def preflight():
+    """Senaryolara baslamadan once bagimliliklari dogrular.
+
+    Ollama veya backend kapaliyken kosmak, senaryo basarisizligi gibi gorunen
+    ama aslinda ortam sorunu olan sonuclar uretiyor. Onceden ve net soylemek daha iyi.
+    """
+    import requests
+
+    ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
+    ollama_root = ollama_url.split("/api/")[0]
+    stock_url = os.getenv("STOCK_SERVICE_URL", "http://localhost:8081")
+
+    checks = [
+        ("Ollama", f"{ollama_root}/api/tags", "ollama serve"),
+        ("Spring Boot backend", f"{stock_url}/api/products",
+         "cd stock-service && java -jar target/stock-service-0.0.1-SNAPSHOT.jar"),
+    ]
+
+    problems = []
+    for name, url, hint in checks:
+        try:
+            response = requests.get(url, timeout=5)
+            response.raise_for_status()
+            print(f"  [OK ] {name}: {url}")
+        except Exception as exc:
+            reason = type(exc).__name__
+            print(f"  [YOK] {name}: {url} ({reason})")
+            problems.append(f"{name} erisilemiyor ({url}). Baslatmak icin: {hint}")
+
+    return problems
+
+
 class RecordingLLM:
     """LLMService'i sarar; istek başına harcanan token sayısını kaydeder."""
 
@@ -357,6 +389,15 @@ def main():
             return 2
     elif not args.include_writes:
         scenarios = [s for s in scenarios if not s.get("writes")]
+
+    print("Ön kontrol:")
+    problems = preflight()
+    if problems:
+        print("\nKoşu başlatılmadı, önce şunları düzelt:")
+        for problem in problems:
+            print(f"  · {problem}")
+        return 2
+    print()
 
     print(f"{len(scenarios)} senaryo × {args.runs} tekrar")
     if not args.include_writes and not args.only:
