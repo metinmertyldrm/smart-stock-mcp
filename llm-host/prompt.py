@@ -272,6 +272,11 @@ RULES:
 CONTEXT VS TOOL:
 - If a value is already available in the context (like LAST_CHEAPEST_PLAN, LAST_FASTEST_PLAN, or LAST_REPLENISHMENT), you can refer to it using "$from_context".
 - Never use "$from_context" for data produced by an earlier step in the current plan execution. For that, use "$from" referencing the step ID.
+- "$from" accepts ONLY a step ID of the current plan (step_1, step_2, ...). NEVER put a context name inside "$from".
+  Wrong: {{"$from": "last_reference.id"}}   Correct: {{"$from_context": "last_reference.id"}}
+- Valid "$from_context" names: last_plan, last_cheapest_plan, last_fastest_plan, last_product, last_replenishment, last_reference, pending_draft_id.
+- Only list a name in "context_sources" if it is actually shown above (LAST_REFERENCE, PENDING_DRAFT_ID, LAST_CHEAPEST_PLAN, LAST_FASTEST_PLAN).
+  If it is not shown, that data does not exist yet: produce it with tool steps instead of declaring context_sources.
 
 Retrieval vs Planning:
 - Use data retrieval tools (like list_products, calculate_replenishment, etc.) to get details about stock levels or replenishment needs before planning or ordering.

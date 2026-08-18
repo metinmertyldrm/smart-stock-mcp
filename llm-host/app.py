@@ -761,6 +761,18 @@ def resolve_argument_value(value, execution_results, state=None):
     source = value.get("$from")
     if source:
         step_id, _, result_path = source.partition(".")
+
+        # Model bazen $from_context yerine $from yaziyor ("last_reference.id" gibi).
+        # Niyet acik oldugu icin cezalandirmak yerine dogru mekanizmaya yonlendiriyoruz.
+        if step_id in ALLOWED_CONTEXT_SOURCES and step_id not in execution_results:
+            if state is None:
+                raise ValueError(
+                    "Conversation state context resolution icin gerekli."
+                )
+            coerced = dict(value)
+            coerced["$from_context"] = coerced.pop("$from")
+            return resolve_context_reference(coerced, state)
+
         step_result = execution_results.get(step_id)
         if step_result is None:
             raise ValueError(f"Kaynak adım sonucu bulunamadı: {step_id}")
@@ -887,10 +899,27 @@ async def execute_plan(plan: dict, client: MCPClient, available_tool_names: set[
     # cached conversation context instead.  Materialize that context as normal
     # execution results so callers can pass it to the reasoning layer.  This
     # also avoids indexing an empty steps list when the plan completes.
-    for source in plan.get("context_sources", []):
+    declared_sources = plan.get("context_sources") or []
+    for source in declared_sources:
         value = getattr(state, source, None) if state is not None else None
         if value is not None:
             execution_results[source] = serialize_plan(value)
+
+    # Hicbir kaynak cozulemediyse sessizce "basarili" donmek yanlis cevap uretir:
+    # reasoning katmani bos veriyle "bilgi yok" der. Basarisiz sayip onarima birakiyoruz.
+    if declared_sources and not execution_results:
+        return {
+            "success": False,
+            "failed_step": "context_sources",
+            "error": (
+                "Plan su baglam kaynaklarini istedi ancak hicbiri mevcut degil: "
+                + ", ".join(declared_sources)
+                + ". Bu verileri once ilgili tool adimlariyla uret (ornegin "
+                "calculate_replenishment ve ardindan create_procurement_plan), "
+                "context_sources yerine adim referanslari kullan."
+            ),
+            "results": execution_results,
+        }
     for index, step in enumerate(plan.get("steps", [])):
         step_id = step.get("id") or f"step_{index + 1}"
         tool_name = step["tool"]

@@ -159,7 +159,13 @@ class AgentApplication:
         cached = {k: v for k, v in {"last_cheapest_plan": state.last_cheapest_plan, "last_fastest_plan": state.last_fastest_plan}.items() if is_plan_valid(v)}
         system_prompt = get_execution_plan_prompt(tools, state.last_plan, state, cached)
         raw = self.llm.generate([{"role": "system", "content": system_prompt}, *state.history, {"role": "user", "content": message}])
-        plan = parse_execution_plan(raw)
+        try:
+            plan = parse_execution_plan(raw)
+        except ValueError as exc:
+            # Dogrulama hatasi execute_plan'den ONCE olusur; onarim dongusu buraya da uygulanmali.
+            plan = self.repair_invalid_plan(system_prompt, message, raw, exc, conversation_id)
+            if plan is None:
+                return self.clarification_response(conversation_id, message, permission, state, exc)
         if permission == "PLAN" and any(s.get("tool") in WRITE_TOOLS for s in plan.get("steps", [])):
             raise HTTPException(403, "Salt okunur istekte yazma işlemi engellendi.")
         self.store.add_message(conversation_id, "user", message)
@@ -212,6 +218,46 @@ class AgentApplication:
             state.pending_draft_id = None
         response = {"conversationId": conversation_id, "permissionLevel": permission, "plan": plan, "trace": trace, "finalAnswer": answer, "pendingDraftId": state.pending_draft_id}
         self.store.add_message(conversation_id, "assistant", answer, "success" if execution.get("success") else "failed", response)
+        return response
+
+    def repair_invalid_plan(self, system_prompt, message, raw, error, conversation_id):
+        """Plan dogrulamadan gecemediginde modele hatayi geri verip bir kez daha dener."""
+        logger.info("Plan validation failed (%s); attempting repair conversation_id=%s", error, conversation_id)
+        try:
+            repaired_raw = self.llm.generate([
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": build_repair_instruction(
+                    message,
+                    {"invalid_plan_output": raw},
+                    {"success": False, "stage": "plan_validation", "error": str(error)},
+                    "",
+                )},
+            ])
+            return parse_execution_plan(repaired_raw)
+        except Exception:
+            logger.exception("Invalid plan could not be repaired conversation_id=%s", conversation_id)
+            return None
+
+    def clarification_response(self, conversation_id, message, permission, state, reason):
+        """Onarim da tutmadi: zinciri durdur, kullaniciya ne yapamadigimizi acikla ve sor."""
+        answer = (
+            "İsteğinizi çalıştırılabilir bir işlem planına dönüştüremedim. "
+            f"Karşılaştığım sorun: {reason} "
+            "İsteğinizi biraz daha belirgin yazar mısınız? Örneğin hangi ürün grubunu "
+            "(stokta olmayanlar, kritik seviyedekiler, belirli bir kategori), hangi ölçütü "
+            "(en ucuz, en hızlı, en yüksek puanlı) ve sonucu satın alma planı olarak mı yoksa "
+            "taslak sipariş olarak mı istediğinizi belirtebilirsiniz."
+        )
+        self.store.add_message(conversation_id, "user", message)
+        response = {
+            "conversationId": conversation_id,
+            "permissionLevel": permission,
+            "plan": {"type": "execution_plan", "goal": "CLARIFY", "steps": []},
+            "trace": [],
+            "finalAnswer": answer,
+            "pendingDraftId": state.pending_draft_id,
+        }
+        self.store.add_message(conversation_id, "assistant", answer, "failed", response)
         return response
 
     async def repair(self, system_prompt, message, plan, execution, names, state, permission, conversation_id):
