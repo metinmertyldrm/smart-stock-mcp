@@ -104,6 +104,45 @@ async def list_tools() -> list[Tool]:
             }
         ),
         Tool(
+            name="create_incoming_orders",
+            description=(
+                "Register multiple purchased products as pending incoming stock in a single call. "
+                "Use this right after place_order to record the ordered items as expected stock, "
+                "so replenishment calculations stop requesting them again."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "description": "Products to register as incoming stock.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "product_id": {
+                                    "type": "integer",
+                                    "description": "ID of the product."
+                                },
+                                "quantity": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "description": "Ordered quantity."
+                                },
+                                "expected_delivery_date": {
+                                    "type": "string",
+                                    "description": "Expected delivery date as YYYY-MM-DD (optional)."
+                                }
+                            },
+                            "required": ["product_id", "quantity"],
+                            "additionalProperties": False
+                        }
+                    }
+                },
+                "required": ["items"],
+                "additionalProperties": False,
+            }
+        ),
+        Tool(
             name="receive_order",
             description="Receive a pending incoming order, adding its quantity to current stock level.",
             inputSchema={
@@ -242,6 +281,35 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[TextConten
                     "success": False,
                     "error": "Failed to create incoming order"
                 }
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(result, ensure_ascii=False)
+                )
+            ]
+
+        elif name == "create_incoming_orders":
+            items = arguments.get("items")
+            if not items:
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps({
+                            "success": False,
+                            "error": (
+                                "No items provided. Call place_order first and pass its result via "
+                                "$from with the 'order_to_incoming_items' transform."
+                            )
+                        }, ensure_ascii=False)
+                    )
+                ]
+
+            orders = await service.create_incoming_orders(items)
+            result = {
+                "success": True,
+                "count": len(orders),
+                "orders": [o.model_dump() for o in orders]
+            }
             return [
                 TextContent(
                     type="text",

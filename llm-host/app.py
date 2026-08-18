@@ -131,6 +131,7 @@ def parse_execution_plan(text: str) -> dict:
         "create_purchase_draft",
         "place_order",
         "create_incoming_order",
+        "create_incoming_orders",
         "receive_order",
     }
     INFO_TOOLS = {
@@ -162,8 +163,14 @@ def parse_execution_plan(text: str) -> dict:
                 raise ValueError("DRAFT planı 'place_order' adımı içeremez.")
 
     elif goal == "ORDER":
-        if not steps or steps[-1]["tool"] != "place_order":
-            raise ValueError("ORDER planının son adımı 'place_order' olmalıdır.")
+        if not steps:
+            raise ValueError("ORDER planında en az bir adım bulunmalıdır.")
+        if not any(step["tool"] == "place_order" for step in steps):
+            raise ValueError("ORDER planı 'place_order' adımı içermelidir.")
+        if steps[-1]["tool"] not in ("place_order", "create_incoming_orders"):
+            raise ValueError(
+                "ORDER planının son adımı 'place_order' veya 'create_incoming_orders' olmalıdır."
+            )
 
     elif goal == "REASON":
         for step in steps:
@@ -304,11 +311,46 @@ def plan_to_draft_items(value):
 
 
 
+def order_to_incoming_items(value):
+    """place_order ciktisini create_incoming_orders girdisine cevirir."""
+    if not isinstance(value, dict):
+        raise ValueError("order_to_incoming_items yalnizca place_order sonucu kabul eder.")
+
+    items = value.get("items")
+    if not isinstance(items, list) or not items:
+        raise ValueError("Siparis icinde kalem bulunamadi.")
+
+    # Java LocalDateTime "2026-08-20T14:30:00" seklinde gelir; tarih kismi yeterli.
+    expected = value.get("expectedDeliveryDate") or value.get("expected_delivery_date")
+    expected_date = None
+    if isinstance(expected, str) and expected:
+        expected_date = expected.split("T")[0]
+
+    result = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        product = item.get("product") if isinstance(item.get("product"), dict) else {}
+        product_id = product.get("id") or item.get("product_id") or item.get("productId")
+        quantity = item.get("quantity")
+        if product_id is None or not quantity:
+            continue
+        entry = {"product_id": int(product_id), "quantity": int(quantity)}
+        if expected_date:
+            entry["expected_delivery_date"] = expected_date
+        result.append(entry)
+
+    if not result:
+        raise ValueError("Siparis kalemlerinden gecerli urun/miktar cikarilamadi.")
+    return result
+
+
 TRANSFORMS = {
     "replenishments_to_items": replenishments_to_items,
     "plan_to_draft_items": plan_to_draft_items,
     "out_of_stock_products_to_items": out_of_stock_products_to_items,
     "low_stock_products_to_items": low_stock_products_to_items,
+    "order_to_incoming_items": order_to_incoming_items,
 }
 
 
@@ -888,7 +930,8 @@ async def execute_plan(plan: dict, client: MCPClient, available_tool_names: set[
             if expected_date_str:
                 from datetime import date
                 try:
-                    expected_date = date.fromisoformat(expected_date_str)
+                    # Java LocalDateTime "2026-08-20T14:30:00" seklinde gelebilir.
+                    expected_date = date.fromisoformat(str(expected_date_str).split("T")[0])
                     if expected_date < date.today():
                         raise ValueError("Teslimat tarihi geçmiş bir tarih olamaz.")
                 except ValueError as ve:
@@ -1555,6 +1598,7 @@ async def main():
                     "create_purchase_draft",
                     "place_order",
                     "create_incoming_order",
+                    "create_incoming_orders",
                     "receive_order",
                 }
                 has_unauthorized_write = False

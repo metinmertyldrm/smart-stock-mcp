@@ -22,7 +22,8 @@ from llm import LLMService
 from mcp_client import MCPClient
 from prompt import get_reasoning_prompt
 
-WRITE_TOOLS = {"create_purchase_draft", "place_order", "create_incoming_order", "receive_order"}
+WRITE_TOOLS = {"create_purchase_draft", "place_order", "create_incoming_order",
+               "create_incoming_orders", "receive_order"}
 WRITE_INTENT_WORDS = ("sipariş", "taslak", "satın al", "oluştur", "place", "draft", "order")
 CONFIRM_INTENT_WORDS = ("evet", "onay", "onayla", "onaylıyorum", "devam", "tamam", "yes", "confirm")
 DB_PATH = os.getenv("LLM_CONVERSATIONS_DB", os.path.join(os.path.dirname(__file__), "conversations.db"))

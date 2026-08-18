@@ -68,3 +68,7 @@ logs/
 # İşletim Sistemi Artıkları
 .DS_Store
 Thumbs.db
+
+# Runtime artefaktlari (calisma aninda uretilir, repoya girmemeli)
+llm-host/conversations.db
+llm-host/*.db

@@ -62,6 +62,24 @@ class ProductService:
             response.raise_for_status()
             return IncomingOrder(**response.json())
 
+    async def create_incoming_orders(self, items: List[dict]) -> List[IncomingOrder]:
+        """Create one pending incoming order per item (batch helper)."""
+        created: List[IncomingOrder] = []
+        async with httpx.AsyncClient() as client:
+            for item in items:
+                payload = {
+                    "productId": item.get("product_id") or item.get("productId"),
+                    "quantity": item.get("quantity"),
+                }
+                expected = item.get("expected_delivery_date") or item.get("expectedDeliveryDate")
+                if expected:
+                    payload["expectedDeliveryDate"] = expected
+
+                response = await client.post(f"{self.base_url}/api/orders", json=payload)
+                response.raise_for_status()
+                created.append(IncomingOrder(**response.json()))
+        return created
+
     async def receive_order(self, order_id: int) -> IncomingOrder:
         """Mark an incoming order as received, increasing product stock."""
         async with httpx.AsyncClient() as client:

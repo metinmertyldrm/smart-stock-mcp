@@ -196,6 +196,7 @@ EXAMPLES:
    - step_3: create_purchase_draft(arguments: items={{"$from": "step_2", "$transform": "plan_to_draft_items"}})
 5. "Siparişi onaylıyorum" or "Evet" (when PENDING_DRAFT_ID exists) -> goal: ORDER, steps:
    - step_1: place_order(arguments: draft_id={{"$from_context": "pending_draft_id"}})
+   - step_2: create_incoming_orders(arguments: items={{"$from": "step_1", "$transform": "order_to_incoming_items"}})
 6. "Stokta olmayanlar için satın alma planı hazırla" -> goal: PLAN, steps:
    - step_1: list_out_of_stock
    - step_2: create_procurement_plan(arguments: items={{"$from": "step_1.products", "$transform": "out_of_stock_products_to_items"}}, objective="CHEAPEST")
@@ -214,7 +215,7 @@ EXAMPLES:
     - step_3: create_purchase_draft(arguments: items={{"$from": "step_2", "$transform": "plan_to_draft_items"}})
 12. "İki planı karşılaştır, farklar nedir?" (when both cheapest and fastest plans are cached) -> goal: REASON, steps: [], context_sources: ["last_cheapest_plan", "last_fastest_plan"]
 
-DYNAMIC REFERENCING: {{"$from": "step_id.path", "$transform": "replenishments_to_items"|"plan_to_draft_items"|"out_of_stock_products_to_items"|"low_stock_products_to_items"}} or {{"$from_context": "last_reference.id"}} or {{"$from_context": "pending_draft_id"}}
+DYNAMIC REFERENCING: {{"$from": "step_id.path", "$transform": "replenishments_to_items"|"plan_to_draft_items"|"out_of_stock_products_to_items"|"low_stock_products_to_items"|"order_to_incoming_items"}} or {{"$from_context": "last_reference.id"}} or {{"$from_context": "pending_draft_id"}}
 
 RULES:
 1. Omit optional params not asked. Do not pass null/empty/0 unless requested.
@@ -250,6 +251,9 @@ RULES:
     Only when the user explicitly confirms the draft order (e.g., "onaylıyorum", "evet", "devam et", "siparişi tamamla", "evet, siparişi ver") AND PENDING_DRAFT_ID is present:
     - Set goal="ORDER".
     - Call place_order using draft_id from pending_draft_id, like {{"$from_context": "pending_draft_id"}}.
+    - ALWAYS add a second step after place_order calling create_incoming_orders with
+      items={{"$from": "step_1", "$transform": "order_to_incoming_items"}}. This registers the purchased
+      quantities as expected incoming stock, so replenishment stops requesting the same products again.
 18. COMPARISON RULE:
     If both LAST_CHEAPEST_PLAN and LAST_FASTEST_PLAN are present in the cached context, and the user asks to compare them, ask which one is better/more logical, or ask about the differences between them (e.g., "ikisini karşılaştır", "hangisi daha mantıklı", "farkları ne"):
     - Set goal="REASON".
@@ -262,7 +266,8 @@ RULES:
 20. LANGUAGE RULE:
     The "answer" and "final_response" fields (including in the assistant history) MUST always be in Turkish. Never generate or output Chinese, English, or any other language for these fields.
 21. ORDER GOAL STEPS RULE:
-    For the "ORDER" goal, steps MUST NOT be empty. You must include a step calling the 'place_order' tool with the draft_id argument resolved from pending_draft_id.
+    For the "ORDER" goal, steps MUST NOT be empty. You must include a step calling the 'place_order' tool with the draft_id argument resolved from pending_draft_id,
+    followed by a create_incoming_orders step that consumes the place_order result via the order_to_incoming_items transform.
 
 CONTEXT VS TOOL:
 - If a value is already available in the context (like LAST_CHEAPEST_PLAN, LAST_FASTEST_PLAN, or LAST_REPLENISHMENT), you can refer to it using "$from_context".
