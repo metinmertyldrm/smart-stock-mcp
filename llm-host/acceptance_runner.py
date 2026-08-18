@@ -89,7 +89,8 @@ SCENARIOS = [
     {
         "id": "pending_orders_receive",
         "kaynak": "Taslak örnek komut 5",
-        "known_gap": "Bekleyen siparişleri listeleyen MCP tool'u yok.",
+        "known_gap": "Bekleyen siparişleri listeleyen MCP tool'u yok; "
+                     "sistem doğru davranıp açıklama istiyor (CLARIFY).",
         "turns": ["Bekleyen siparişleri kontrol et ve teslim edilen ürünleri stoğa ekle."],
         "expect": {"goals": ["INFO", "REASON", "PLAN"], "tools_required": []},
     },
@@ -157,9 +158,18 @@ def evaluate(scenario, response):
 
     problems = []
 
+    # Sifir adimli planlar patladiginda izde "failed" olmaz; butunsel bayrak sart.
+    succeeded = response.get("succeeded")
+    if succeeded is False:
+        problems.append("istek başarısız tamamlandı")
+    elif succeeded is None and "tamamlanamadı" in (response.get("finalAnswer") or ""):
+        problems.append("istek başarısız tamamlandı (cevaptan anlaşıldı)")
+
     if "failed" in statuses:
-        failed = tools[statuses.index("failed")]
-        problems.append(f"adım başarısız: {failed}")
+        index = statuses.index("failed")
+        detail = (trace[index].get("resultSummary") or "").strip()
+        problems.append(f"adım başarısız: {tools[index]}"
+                        + (f" -> {detail[:160]}" if detail else ""))
 
     goals = expect.get("goals")
     if goals and goal not in goals:

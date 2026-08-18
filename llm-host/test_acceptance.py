@@ -8,13 +8,15 @@ install_optional_stubs()
 from acceptance_runner import SCENARIOS, collect_arguments, evaluate, summarize  # noqa: E402
 
 
-def response(goal, steps):
+def response(goal, steps, succeeded=True, answer="cevap"):
     """steps: (tool, status, arguments) üçlüleri."""
     return {
         "plan": {"goal": goal},
-        "trace": [{"stepId": f"step_{i}", "tool": tool, "status": status, "arguments": args}
+        "trace": [{"stepId": f"step_{i}", "tool": tool, "status": status, "arguments": args,
+                   "resultSummary": "hata detayı" if status == "failed" else "ok"}
                   for i, (tool, status, args) in enumerate(steps, start=1)],
-        "finalAnswer": "cevap",
+        "finalAnswer": answer,
+        "succeeded": succeeded,
     }
 
 
@@ -54,7 +56,8 @@ class EvaluateTest(unittest.TestCase):
             ("create_procurement_plan", "failed", {"objective": "CHEAPEST"})]))
 
         self.assertFalse(result["ok"])
-        self.assertIn("adım başarısız: create_procurement_plan", result["problems"])
+        self.assertTrue(any(problem.startswith("adım başarısız: create_procurement_plan")
+                            for problem in result["problems"]), result["problems"])
 
     def test_wrong_goal_is_reported(self):
         result = evaluate(self.SCENARIO, response("DRAFT", [
@@ -101,7 +104,41 @@ class EvaluateTest(unittest.TestCase):
             ("create_incoming_orders", "skipped", {})]))
 
         self.assertEqual([p for p in result["problems"] if "skipped" in p], [])
-        self.assertIn("adım başarısız: place_order", result["problems"])
+        self.assertTrue(any(problem.startswith("adım başarısız: place_order")
+                            for problem in result["problems"]), result["problems"])
+
+
+class OverallFailureTest(unittest.TestCase):
+    """Regresyon: sıfır adımlı bir plan patladığında iz boş kalır ve
+    yalnızca adım durumlarına bakan değerlendirme bunu 'başarılı' sayıyordu."""
+
+    def test_stepless_failure_is_not_a_pass(self):
+        result = evaluate({"id": "x", "expect": {"goals": ["REASON"], "tools_required": []}},
+                          response("REASON", [], succeeded=False,
+                                   answer="İşlem tamamlanamadı. Lütfen isteğinizi kontrol edin."))
+
+        self.assertFalse(result["ok"])
+        self.assertIn("istek başarısız tamamlandı", result["problems"])
+
+    def test_stepless_success_still_passes(self):
+        result = evaluate({"id": "x", "expect": {"goals": ["REASON"], "tools_required": []}},
+                          response("REASON", [], succeeded=True))
+
+        self.assertTrue(result["ok"], result["problems"])
+
+    def test_failure_detail_is_carried_into_the_report(self):
+        result = evaluate({"id": "x", "expect": {}}, response("PLAN", [
+            ("create_procurement_plan", "failed", {})], succeeded=False))
+
+        self.assertTrue(any("hata detayı" in problem for problem in result["problems"]))
+
+    def test_missing_flag_falls_back_to_answer_text(self):
+        payload = response("REASON", [], answer="İşlem tamamlanamadı.")
+        del payload["succeeded"]
+
+        result = evaluate({"id": "x", "expect": {}}, payload)
+
+        self.assertFalse(result["ok"])
 
 
 class SummaryTest(unittest.TestCase):

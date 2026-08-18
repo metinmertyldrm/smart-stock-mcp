@@ -226,7 +226,9 @@ class AgentApplication:
             state.pending_draft_id = int(draft_id)
         if execution.get("success") and last_tool == "place_order":
             state.pending_draft_id = None
-        response = {"conversationId": conversation_id, "permissionLevel": permission, "plan": plan, "trace": trace, "finalAnswer": answer, "pendingDraftId": state.pending_draft_id}
+        response = {"conversationId": conversation_id, "permissionLevel": permission, "plan": plan,
+                    "trace": trace, "finalAnswer": answer, "pendingDraftId": state.pending_draft_id,
+                    "succeeded": bool(execution.get("success"))}
         self.store.add_message(conversation_id, "assistant", answer, "success" if execution.get("success") else "failed", response)
         return response
 
@@ -268,6 +270,7 @@ class AgentApplication:
             "trace": [],
             "finalAnswer": answer,
             "pendingDraftId": state.pending_draft_id,
+            "succeeded": False,
         }
         self.store.add_message(conversation_id, "assistant", answer, "failed", response)
         return response
