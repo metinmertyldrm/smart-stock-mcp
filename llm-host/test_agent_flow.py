@@ -17,8 +17,13 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def temp_store():
-    return web_api.ConversationStore(os.path.join(tempfile.mkdtemp(), "test.db"))
+def temp_store(test_case):
+    """Geçici bir sohbet veritabanı açar ve test bitince kapatılmasını garantiler."""
+    directory = tempfile.TemporaryDirectory()
+    test_case.addCleanup(directory.cleanup)
+    store = web_api.ConversationStore(os.path.join(directory.name, "test.db"))
+    test_case.addCleanup(store.close)   # LIFO: önce bağlantı kapanır, sonra klasör silinir
+    return store
 
 
 INVALID_PLAN = json.dumps({"type": "execution_plan", "goal": "PLAN", "steps": [
@@ -45,7 +50,7 @@ class InvalidPlanRepairTest(unittest.TestCase):
 
     def test_validation_failure_is_repaired(self):
         client = FakeMCPClient(STOCK_TOOLS)
-        agent = web_api.AgentApplication(client, ScriptedLLM(INVALID_PLAN, VALID_PLAN), temp_store())
+        agent = web_api.AgentApplication(client, ScriptedLLM(INVALID_PLAN, VALID_PLAN), temp_store(self))
 
         response = run(agent.chat("c1", "kritik ürünler için plan hazırla"))
 
@@ -55,7 +60,7 @@ class InvalidPlanRepairTest(unittest.TestCase):
     def test_unrepairable_plan_explains_and_asks(self):
         """Kullanıcının kararı: önce onar, tutmazsa sor."""
         agent = web_api.AgentApplication(
-            FakeMCPClient(STOCK_TOOLS), ScriptedLLM(INVALID_PLAN, INVALID_PLAN), temp_store())
+            FakeMCPClient(STOCK_TOOLS), ScriptedLLM(INVALID_PLAN, INVALID_PLAN), temp_store(self))
 
         response = run(agent.chat("c1", "kritik ürünler için plan hazırla"))
 
@@ -66,7 +71,7 @@ class InvalidPlanRepairTest(unittest.TestCase):
 class ExecutionRepairTest(unittest.TestCase):
     def test_failed_step_triggers_second_attempt(self):
         client = FakeMCPClient(STOCK_TOOLS)
-        agent = web_api.AgentApplication(client, ScriptedLLM(EMPTY_ARGS_PLAN, VALID_PLAN), temp_store())
+        agent = web_api.AgentApplication(client, ScriptedLLM(EMPTY_ARGS_PLAN, VALID_PLAN), temp_store(self))
 
         response = run(agent.chat("c1", "kritik ürünler için plan hazırla"))
 
@@ -80,7 +85,7 @@ class TraceStatusTest(unittest.TestCase):
 
     def test_failed_step_is_reported_with_real_error(self):
         agent = web_api.AgentApplication(
-            FakeMCPClient(STOCK_TOOLS), ScriptedLLM(EMPTY_ARGS_PLAN), temp_store())
+            FakeMCPClient(STOCK_TOOLS), ScriptedLLM(EMPTY_ARGS_PLAN), temp_store(self))
 
         response = run(agent.chat("c1", "kritik ürünler için plan hazırla"))
 
@@ -97,7 +102,7 @@ class TraceStatusTest(unittest.TestCase):
             "place_order": {"success": False, "error": "Draft ID 12 not found."},
             "create_incoming_orders": {"success": True},
         })
-        agent = web_api.AgentApplication(client, ScriptedLLM(order_plan), temp_store())
+        agent = web_api.AgentApplication(client, ScriptedLLM(order_plan), temp_store(self))
         state = web_api.ConversationState()
         state.pending_draft_id = 12
         agent.states["c1"] = state
@@ -114,7 +119,7 @@ class PermissionTest(unittest.TestCase):
             {"id": "step_1", "tool": "place_order",
              "arguments": {"draft_id": {"$from_context": "pending_draft_id"}}}]})
         client = FakeMCPClient({"place_order": {"success": True}})
-        agent = web_api.AgentApplication(client, ScriptedLLM(order_plan), temp_store())
+        agent = web_api.AgentApplication(client, ScriptedLLM(order_plan), temp_store(self))
 
         response = run(agent.chat("c1", "satın al"))
 
@@ -128,7 +133,7 @@ class PermissionTest(unittest.TestCase):
         draft_plan = json.dumps({"type": "execution_plan", "goal": "DRAFT", "steps": [
             {"id": "step_1", "tool": "create_purchase_draft", "arguments": {"items": []}}]})
         client = FakeMCPClient({"create_purchase_draft": {"success": True}})
-        agent = web_api.AgentApplication(client, ScriptedLLM(draft_plan), temp_store())
+        agent = web_api.AgentApplication(client, ScriptedLLM(draft_plan), temp_store(self))
 
         with self.assertRaises(Exception):
             run(agent.chat("c1", "stok durumu nedir"))   # yazma niyeti yok -> PLAN seviyesi
@@ -139,7 +144,7 @@ class HistoryBoundTest(unittest.TestCase):
     """Geçmiş prompta giriyor; num_ctx taşmasın diye sınırlı olmalı."""
 
     def test_history_is_capped_by_count_and_length(self):
-        store = temp_store()
+        store = temp_store(self)
         store.create("owner", "başlık", "c1")
         for _ in range(30):
             store.add_message("c1", "assistant", "x" * 2000)

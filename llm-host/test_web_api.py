@@ -1,4 +1,5 @@
 import importlib.util
+import os
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -13,12 +14,14 @@ from web_api import AgentApplication, ChatRequest, ConversationStore, now
 
 class WebApiTest(unittest.TestCase):
     def setUp(self):
-        self.database = tempfile.NamedTemporaryFile(suffix=".db")
-        self.store = ConversationStore(self.database.name)
+        # Windows'ta NamedTemporaryFile dosyayi ozel erisimle acik tutar ve
+        # sqlite3 ayni dosyayi adiyla acamaz ("unable to open database file").
+        self.directory = tempfile.TemporaryDirectory()
+        self.store = ConversationStore(os.path.join(self.directory.name, "test.db"))
 
     def tearDown(self):
         self.store.close()
-        self.database.close()
+        self.directory.cleanup()
 
     def test_chat_request_requires_conversation(self):
         with self.assertRaises(Exception):
