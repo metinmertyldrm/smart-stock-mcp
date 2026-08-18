@@ -7,6 +7,10 @@ class LLMService:
     def __init__(self):
         self.url = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
         self.model = os.getenv("OLLAMA_MODEL", "qwen3:8b")
+        # Ollama varsayilan num_ctx degeri sistem promptumuzdan kucuk olabilir.
+        # Asildiginda prompt BASTAN kesilir; ilk kesilen bolum AVAILABLE TOOLS olur.
+        self.num_ctx = int(os.getenv("OLLAMA_NUM_CTX", "8192"))
+        self.num_predict = int(os.getenv("OLLAMA_NUM_PREDICT", "1024"))
 
     def generate(self, messages):
         prompt_parts = []
@@ -28,7 +32,8 @@ class LLMService:
             "stream": False,
             "think": False,
             "options": {
-                "num_predict": 512
+                "num_predict": self.num_predict,
+                "num_ctx": self.num_ctx
             }
         }
 
@@ -46,6 +51,19 @@ class LLMService:
             ) from exc
 
         data = response.json()
+
+        prompt_tokens = data.get("prompt_eval_count")
+        if prompt_tokens is not None:
+            print(
+                f"[LLM] prompt {prompt_tokens} token / num_ctx {self.num_ctx} | "
+                f"cikti {data.get('eval_count')} token / num_predict {self.num_predict}"
+            )
+            if prompt_tokens >= self.num_ctx:
+                print(
+                    "[LLM] UYARI: prompt baglam penceresini doldurdu. "
+                    "Prompt bastan kesilmis olabilir (once AVAILABLE TOOLS gider)."
+                )
+
         if "response" not in data:
             raise RuntimeError(f"Ollama cevabında 'response' alanı yok: {data}")
         return data["response"]

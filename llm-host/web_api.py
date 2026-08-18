@@ -27,6 +27,9 @@ WRITE_TOOLS = {"create_purchase_draft", "place_order", "create_incoming_order",
 WRITE_INTENT_WORDS = ("sipariş", "taslak", "satın al", "oluştur", "place", "draft", "order")
 CONFIRM_INTENT_WORDS = ("evet", "onay", "onayla", "onaylıyorum", "devam", "tamam", "yes", "confirm")
 DB_PATH = os.getenv("LLM_CONVERSATIONS_DB", os.path.join(os.path.dirname(__file__), "conversations.db"))
+# Gecmis promptun icine giriyor; num_ctx tasmasin diye hem adet hem uzunluk sinirli.
+HISTORY_MESSAGES = int(os.getenv("LLM_HISTORY_MESSAGES", "8"))
+HISTORY_CHARS = int(os.getenv("LLM_HISTORY_CHARS", "800"))
 logger = logging.getLogger(__name__)
 
 
@@ -92,9 +95,9 @@ class ConversationStore:
         self.db.execute("UPDATE conversations SET updated_at=? WHERE id=?", (timestamp, conversation_id))
         self.db.commit()
 
-    def history(self, conversation_id, limit=20):
+    def history(self, conversation_id, limit=HISTORY_MESSAGES):
         rows = self.db.execute("SELECT role,content FROM messages WHERE conversation_id=? AND status='success' ORDER BY created_at DESC LIMIT ?", (conversation_id, limit)).fetchall()
-        return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
+        return [{"role": r["role"], "content": r["content"][:HISTORY_CHARS]} for r in reversed(rows)]
 
     def pending_draft(self, conversation_id):
         rows = self.db.execute(
