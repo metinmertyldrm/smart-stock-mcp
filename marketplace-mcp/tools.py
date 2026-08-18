@@ -1,8 +1,21 @@
 from mcp.server import Server
 from mcp.types import Tool, TextContent
 import asyncio
+import logging
+import os
+import sys
 from services import MarketplaceService
 import json
+
+# MCP stdio protokolunde sunucunun STDOUT'u JSON-RPC kanalidir.
+# Oraya yazilan her satir protokolu bozar ve gercek cevaplarla birlesip
+# mesaj kaybina yol acar. Teshis ciktilari bu yuzden stderr'e gider.
+logging.basicConfig(
+    stream=sys.stderr,
+    level=os.getenv("MCP_LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(name)s %(levelname)s %(message)s",
+)
+logger = logging.getLogger("marketplace-server")
 
 # Initialize Server and Service
 server = Server("marketplace-server")
@@ -822,17 +835,15 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[TextConten
                         "topsis_score": getattr(o, "topsisScore", 0.0)
                     })
 
-                print(
-                    f"[PROCUREMENT] Product ID: {product_id}, "
-                    f"Requested quantity: {quantity}, "
-                    f"Objective: {objective}"
+                logger.info(
+                    "[PROCUREMENT] Product ID: %s, Requested quantity: %s, Objective: %s",
+                    product_id, quantity, objective,
                 )
 
                 for offer in offers_list:
-                    print(
-                        f"[OFFER] Seller={offer['seller_name']}, "
-                        f"Stock={offer['available_stock']}, "
-                        f"Price={offer['unit_price']}"
+                    logger.debug(
+                        "[OFFER] Seller=%s, Stock=%s, Price=%s",
+                        offer["seller_name"], offer["available_stock"], offer["unit_price"],
                     )
 
                 # 2. Run greedy allocation across offers
