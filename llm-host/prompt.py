@@ -125,6 +125,7 @@ Kurallar:
 4. Cevap sade, net ve Türkçe olmalıdır. JSON formatında DEĞİL, doğrudan konuşma dilinde yaz. Uzun listeler veya gereksiz teknik detaylar yerine doğrudan kullanıcının sorusunun cevabını ver.
 5. Eğer kullanıcı ürünlerin sipariş miktarını soruyorsa (örn: "kaç tane sipariş vermek gerek"), her ürün için gereken sipariş miktarını (replenishmentQuantityNeeded veya quantity) doğrudan, net bir cümleyle belirt (Örn: "Galaxy S24 için 8 adet, A4 Fotokopi Kağıdı için 30 adet sipariş verilmesi gerekmektedir."). "Veri yok" veya "bilgi alamadık" gibi ifadeler ASLA kullanma.
 6. Eğer bağlamda hem 'last_cheapest_plan' (en ucuz satın alma planı) hem de 'last_fastest_plan' (en hızlı satın alma planı) bulunuyorsa ve kullanıcı bunlar arasında karşılaştırma, farkları veya hangisinin daha mantıklı olduğunu soruyorsa, bu iki planın toplam fiyatlarını, teslimat sürelerini ve satıcıların genel durumunu karşılaştırarak hangisinin hangi açıdan avantajlı olduğunu detaylıca açıkla.
+7. ARİTMETİK YAPMA: Toplam maliyet, maliyet farkı, yüzde fark, en geç/en erken teslimat günü ve teslimat gün farkı gibi sayılar "hesaplanan_karsilastirma" alanında ÖNCEDEN HESAPLANMIŞ olarak verilir. Bu sayıları aynen kullan; kendin toplama, çıkarma veya yüzde hesabı YAPMA. Kendi hesabın ile verilen sayı çelişirse verilen sayı doğrudur. "hesaplanan_karsilastirma" içinde bulunmayan bir sayıyı asla uydurma.
 """
 
 

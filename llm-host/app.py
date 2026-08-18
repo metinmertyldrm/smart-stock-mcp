@@ -888,6 +888,92 @@ def normalize_tool_result(result) -> dict:
         }
 
 
+def plan_metrics(value):
+    """Bir satin alma plani sonucundan olculebilir metrikleri cikarir."""
+    if not isinstance(value, dict):
+        return None
+
+    objective = value.get("objective")
+    plan = value.get("result") if isinstance(value.get("result"), dict) else value
+    if not isinstance(plan, dict) or plan.get("overall_total") is None:
+        return None
+
+    items = plan.get("items") or []
+    delivery_days = []
+    ratings = []
+    missing = 0
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        missing += item.get("missing_quantity") or 0
+        for allocation in item.get("allocations") or []:
+            if not isinstance(allocation, dict):
+                continue
+            if allocation.get("delivery_days") is not None:
+                delivery_days.append(allocation["delivery_days"])
+            if allocation.get("rating") is not None:
+                ratings.append(allocation["rating"])
+
+    metrics = {
+        "toplam_maliyet": round(float(plan.get("overall_total") or 0), 2),
+        "urun_sayisi": len(items),
+        "eksik_kalan_adet": missing,
+    }
+    if objective:
+        metrics["hedef"] = objective
+    if delivery_days:
+        metrics["en_gec_teslimat_gunu"] = max(delivery_days)
+        metrics["en_erken_teslimat_gunu"] = min(delivery_days)
+    if ratings:
+        metrics["en_dusuk_satici_puani"] = min(ratings)
+        metrics["en_yuksek_satici_puani"] = max(ratings)
+    return metrics
+
+
+def build_plan_comparison(results: dict):
+    """Planlar arasindaki farklari KODDA hesaplar.
+
+    Reasoning katmanina hazir sayi verilir; 8B model toplama/cikarma yaparken
+    hata yapabiliyor ve bu sayilar satin alma kararina girdi oluyor.
+    """
+    plans = {}
+    for key, value in (results or {}).items():
+        metrics = plan_metrics(value)
+        if metrics:
+            plans[key] = metrics
+
+    if not plans:
+        return None
+
+    comparison = {"planlar": plans}
+    if len(plans) < 2:
+        return comparison
+
+    by_cost = sorted(plans.items(), key=lambda kv: kv[1]["toplam_maliyet"])
+    ucuz_key, ucuz = by_cost[0]
+    pahali_key, pahali = by_cost[-1]
+    cost_gap = round(pahali["toplam_maliyet"] - ucuz["toplam_maliyet"], 2)
+
+    fark = {
+        "daha_ucuz_olan": ucuz_key,
+        "daha_pahali_olan": pahali_key,
+        "maliyet_farki_TL": cost_gap,
+    }
+    if ucuz["toplam_maliyet"]:
+        fark["maliyet_farki_yuzde"] = round(100 * cost_gap / ucuz["toplam_maliyet"], 1)
+
+    timed = {k: v for k, v in plans.items() if "en_gec_teslimat_gunu" in v}
+    if len(timed) >= 2:
+        hizli_key, hizli = min(timed.items(), key=lambda kv: kv[1]["en_gec_teslimat_gunu"])
+        yavas_key, yavas = max(timed.items(), key=lambda kv: kv[1]["en_gec_teslimat_gunu"])
+        fark["daha_hizli_olan"] = hizli_key
+        fark["teslimat_farki_gun"] = yavas["en_gec_teslimat_gunu"] - hizli["en_gec_teslimat_gunu"]
+
+    comparison["fark"] = fark
+    return comparison
+
+
 def clean_tool_results_for_reasoning(results: dict) -> dict:
     cleaned = {}
     for step_id, step_res in results.items():
@@ -902,6 +988,10 @@ def clean_tool_results_for_reasoning(results: dict) -> dict:
                 cleaned[step_id] = data
         else:
             cleaned[step_id] = step_res
+
+    comparison = build_plan_comparison(cleaned)
+    if comparison:
+        cleaned["hesaplanan_karsilastirma"] = comparison
     return cleaned
 
 
