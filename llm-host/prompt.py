@@ -129,6 +129,100 @@ Kurallar:
 """
 
 
+def get_decision_journal_prompt(
+    user_query: str,
+    plan: dict,
+    tool_traces: list,
+    final_answer: str,
+    permission_level: str,
+) -> str:
+    """Build a prompt that translates an execution trace for non-technical readers."""
+    context = {
+        "user_query": user_query,
+        "plan": plan,
+        "tool_traces": tool_traces,
+        "final_answer": final_answer,
+        "permission_level": permission_level,
+    }
+    context_json = json.dumps(context, ensure_ascii=False, indent=2, default=str)
+    return f"""Smart Stock AI'nin karar ve işlem günlüğünü yazan açıklama katmanısın.
+
+HEDEF KİTLE:
+LLM, MCP, API, JSON, tool/araç çağrısı veya yazılım geliştirme bilgisi olmayan bir kullanıcı.
+Okuyucu yalnızca şu soruların yanıtını anlamak ister: “Benden ne istendi, sistem neden bu
+yolu seçti, arka planda hangi işler yapıldı, ne bulundu ve sonuç ne oldu?”
+
+HAM BAĞLAM:
+{context_json}
+
+GÖREV:
+Ham bağlamı doğrulanabilir gerçekleri koruyarak sade, doğal ve anlaşılır Türkçeyle açıkla.
+Yalnızca aşağıdaki JSON nesnesini üret; Markdown, kod bloğu veya JSON dışında metin yazma.
+
+ÇIKTI ŞEMASI:
+{{
+  "requestSummary": "Kullanıcının ne istediğini tek ve açık bir cümleyle anlat.",
+  "goalTitle": "Teknik hedef kodu değil, kısa bir Türkçe başlık yaz (ör. Siparişi oluştur).",
+  "goalExplanation": "Bu hedefin neden seçildiğini kullanıcı isteğiyle ilişkilendirerek 1-2 cümlede açıkla.",
+  "permissionExplanation": "İzin seviyesinin pratikte neye izin verdiğini ve hangi güvenlik sınırlarının uygulandığını açıkla.",
+  "decision": {{
+    "title": "Sonucu özetleyen kısa başlık",
+    "description": "Ne yapıldığını, sonucu ve varsa kullanıcının bilmesi gereken sonraki durumu 1-3 cümlede anlat."
+  }},
+  "steps": [
+    {{
+      "stepId": "Ham kayıttaki adım kimliği",
+      "title": "Teknik araç adı yerine yapılan işi anlatan başlık",
+      "status": "success | failed | skipped | running",
+      "toolName": "Ham teknik araç adı; yalnızca teknik detay için koru",
+      "whatItDoes": "Bu aracın genel olarak ne işe yaradığını gündelik dille açıkla.",
+      "whyUsed": "Bu özel istekte neden gerektiğini ve önceki/sonraki adımla ilişkisini açıkla.",
+      "findings": ["Ham JSON yerine, iş açısından önemli sonucu tam cümleyle yaz."],
+      "decisionImpact": "Sonucun kararı veya sonraki adımı nasıl etkilediğini açıkla."
+    }}
+  ],
+  "warnings": ["Yalnızca gerçek bir belirsizlik, hata veya kullanıcı aksiyonu varsa yaz."]
+}}
+
+ZORUNLU YAZIM KURALLARI:
+1. ORDER, PLAN, REASON, FULL, PENDING gibi kodları açıklamasız başlık olarak kullanma.
+   Örneğin ORDER için “Siparişi oluştur”; ardından siparişin kullanıcı tarafından onaylandığı
+   için seçildiğini belirt. Teknik kod gerekli ise yalnızca açıklamadan sonra parantez içinde yaz.
+2. Her adımda “whatItDoes” aracın genel görevidir; “whyUsed” ise bu isteğe özel gerekçedir.
+   İkisini aynı, genel geçer cümleyle doldurma.
+3. “Planın bir sonraki işlemi için gerekli veriyi sağladı” gibi soyut kalıp cümleler kullanma.
+   Hangi verinin neden gerektiğini açıkça söyle.
+4. findings alanına ham JSON, Python sözlüğü, alan adı dökümü veya kesilmiş nesne koyma.
+   id, draftId, totalCost, status ve expectedDeliveryDate gibi alanları kullanıcı diline çevir:
+   “4 numaralı sipariş oluşturuldu”, “Toplam tutar 305.930,00 TL”,
+   “Tahmini teslim tarihi 22 Ağustos 2026” gibi.
+5. Ürünleri adları ve miktarlarıyla yaz. Anlam taşımayan iç kayıt kimliklerini atla; sipariş veya
+   taslak numarası kullanıcıya takip faydası sağlıyorsa koru.
+6. Tarihleri “22 Ağustos 2026”, tutarları Türkçe sayı biçiminde ve para birimiyle yaz.
+   Ham veride saat önemli değilse gösterme.
+7. Teknik terim kullanmak zorundaysan ilk geçtiği yerde gündelik karşılığını açıkla.
+8. Başarılı olmayan bir işlemi başarılı gösterme. skipped için neden çalıştırılmadığını,
+   failed için anlaşılır hata sonucunu belirt. Ham bağlamda bulunmayan neden veya çözüm uydurma.
+9. Araç çıktısında çelişki varsa gizleme; warnings alanında sade biçimde belirt.
+10. Yeni fiyat, miktar, tarih, ürün, satıcı, onay veya güvenlik kontrolü uydurma. Yalnızca ham
+    bağlamdaki bilgileri kullan. Eksik bilgiyi tahmin etmek yerine ilgili alanı kısa tut.
+11. Nihai kararda hem yapılan işlemi hem iş sonucunu anlat. Beklenen stok kaydı oluşturulduysa,
+    bunun henüz mevcut stoğa eklenmediğini ve teslim alınınca ekleneceğini açıkça söyle.
+12. Cümleler kısa, profesyonel ve öğretici olsun; okuyucuyu teknik ayrıntıya boğma.
+
+ÖRNEK DÖNÜŞÜM:
+- Ham sonuç: {{"id":4,"totalCost":305930.0,"status":"PENDING",
+  "expectedDeliveryDate":"2026-08-22T14:55:23","items":[...]}}
+- Uygun bulgular:
+  ["4 numaralı sipariş başarıyla oluşturuldu ve teslimatı bekliyor.",
+   "Siparişin toplam tutarı 305.930,00 TL.",
+   "Tahmini teslim tarihi 22 Ağustos 2026."]
+
+Çıktıyı göndermeden önce sessizce kontrol et: Teknik bilgisi olmayan biri her adımın ne yaptığını,
+neden gerektiğini ve ortaya çıkan somut sonucu anlayabiliyor mu? Anlayamıyorsa daha sade yaz.
+"""
+
+
 def get_execution_plan_prompt(tools_list: list, last_successful_plan: dict | None = None, state=None, valid_cached_plans: dict | None = None) -> str:
     """
     Generates a prompt for execution plan generation with dynamic tools and rules.
