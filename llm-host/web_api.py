@@ -185,7 +185,8 @@ TOOL_EXPLANATIONS = {
     "receive_orders": ("Ürünleri stoğa al", "Kullanıcının onayladığı teslimatların stok miktarlarına işlenmesi için çağrıldı."),
 }
 FALLBACK_PURPOSE = "Bu adım planın bir sonraki işlemi için gerekli veriyi sağlamak üzere çalıştırıldı."
-SENSITIVE_KEYS = {"password", "token", "secret", "credential", "authorization", "system_prompt", "thinking"}
+SENSITIVE_KEYS = {"password", "token", "secret", "api_key", "apikey", "credential", "authorization",
+                  "card_number", "iban", "cvv", "system_prompt", "thinking"}
 
 
 def safe_value(value, depth=0):
@@ -219,6 +220,10 @@ class AgentApplication:
         self.states = {}
 
     async def chat(self, conversation_id, message, owner_id="anonymous"):
+        started_at = now()
+        started_clock = time.perf_counter()
+        execution_id = str(uuid.uuid4())
+        trace_id = str(uuid.uuid4())
         message = message.strip()
         if not message:
             raise HTTPException(422, "Mesaj boş olamaz.")
@@ -280,6 +285,9 @@ class AgentApplication:
             title, purpose = TOOL_EXPLANATIONS.get(tool, (tool.replace("_", " ").title(), FALLBACK_PURPOSE))
             findings = result_findings(detail) if executed else []
             trace.append({"stepId": sid, "tool": tool, "title": title, "purpose": purpose,
+                          "toolCallId": f"{execution_id}:{sid}", "mcpRequestId": f"{trace_id}:{index + 1}",
+                          "mcpServer": "smart-stock-mcp", "trigger": "Kullanıcı isteğinden üretilen plan." if index == 0 else f"{plan.get('steps', [])[index - 1].get('id', f'step_{index}')} adımının tamamlanması.",
+                          "dependency": None if index == 0 else plan.get("steps", [])[index - 1].get("id", f"step_{index}"),
                           "arguments": safe_value(step.get("arguments", {})),
                           "inputSummary": summary(safe_value(step.get("arguments", {}))), "status": status,
                           "resultSummary": summary(safe_value(detail)), "findings": findings,
@@ -287,6 +295,7 @@ class AgentApplication:
                           "impactOnDecision": "Sonuç, sonraki plan adımının girdisini oluşturdu." if executed else "Plan bu adımdan sonra ilerletilemedi.",
                           "nextAction": "Planın sıradaki adımına geçildi." if executed else None,
                           "durationMs": execution.get("durations_ms", {}).get(sid),
+                          "retryCount": 1 if repaired else 0, "rawResponse": safe_value(detail),
                           "error": str(execution.get("error"))[:300] if failed else (detail if status == "skipped" else None)})
         final = execution.get("last_result", {})
         last_tool = plan.get("steps", [{}])[-1].get("tool") if plan.get("steps") else None
@@ -385,20 +394,55 @@ class AgentApplication:
             {"label": "Stok değişikliği", "status": "warning" if stock_changed else "passed", "detail": "Onaylanan teslimatlar stoğa işlendi." if stock_changed else "Stok değiştirilmedi."},
         ]
         all_findings = [finding for item in trace for finding in item.get("findings", [])][:8]
+        goal_reasons = [f"Kullanıcı isteği {plan.get('goal', 'PLAN')} işlem hedefiyle eşleşti."]
+        if plan.get("steps"):
+            goal_reasons.append(f"Hedefi uygulamak için doğrulanmış {len(plan['steps'])} plan adımı üretildi.")
+        if execution.get("success"):
+            goal_reasons.append("Plan adımları host doğrulamasından geçti ve beklenen sırada çalıştı.")
+        changes = []
+        for index, step in enumerate(plan.get("steps", [])):
+            if step.get("tool") not in WRITE_TOOLS:
+                continue
+            value = results.get(step.get("id") or f"step_{index + 1}")
+            if isinstance(value, dict):
+                entity_id = value.get("orderId") or value.get("draftId") or value.get("id")
+                changes.append(f"{step.get('tool')} yazma işlemi tamamlandı" + (f"; kayıt #{entity_id}." if entity_id else "; kayıt kimliği sonuçta bulunmuyor."))
         explanation = {
-            "requestSummary": message[:240], "goalTitle": conversation_title(message),
+            "requestSummary": message[:240], "originalRequest": message[:4000],
+            "detectedIntent": conversation_title(message), "entities": all_findings,
+            "missingInformation": [], "ambiguities": [], "assumptions": [],
+            "goalTitle": conversation_title(message), "goalReasons": goal_reasons,
+            "alternativeExplanation": "Zorunlu plan doğrulaması başarılı olduğu için CLARIFY hedefi gerekmedi." if goal != "CLARIFY" else None,
+            "confidence": "Doğrulanmış plan" if execution.get("success") else "Belirsiz — plan tamamlanamadı",
             "goalExplanation": f"{plan.get('goal', 'PLAN')} hedefi için {len(plan.get('steps', []))} adımlı operasyon planı uygulandı.",
             "permissionExplanation": "İstek bilgi alma veya planlama niteliğinde olduğu için değişiklik yapan araçlara izin verilmedi." if permission == "PLAN" else "İstek değişiklik yapan bir işlem içeriyor; kritik adımlar kullanıcı onayı ve host doğrulamasına tabidir.",
+            "permissionSource": "Host yazma-niyeti politikası (WRITE_INTENT_WORDS); kalıcı kural kimliği tanımlanmamış.",
+            "permissionReason": "Mesajda yazma niyeti tespit edildi." if permission == "FULL" else "Mesajda yazma niyeti tespit edilmedi.",
+            "allowedActions": ["Bilgi okuma", "Plan oluşturma"] + (["İzin verilen yazma araçlarını çalıştırma"] if permission == "FULL" else []),
+            "blockedActions": [] if permission == "FULL" else ["Sipariş, taslak veya stok kaydı oluşturma/değiştirme"],
+            "approvalExplanation": "Kritik yazma işlemi için kullanıcı onayı bekleniyor." if pending else "Bekleyen bir onay adımı yok.",
+            "riskLevel": "Orta — kalıcı veri değişikliği" if permission == "FULL" else "Düşük — salt okunur/planlama",
             "findings": all_findings, "decisionSummary": answer[:300], "safetyChecks": safety_checks,
+            "changes": changes, "userNextAction": "Onay düğmesini kullanın." if pending else "Ek işlem gerekmiyor.",
+            "rollback": "Rollback desteği bu işlem kaydında belirtilmemiş.",
             "warnings": ([] if execution.get("success") else ["Plan tamamlanamadı."]) + (["Kullanıcı onayı bekleniyor."] if pending else []),
             "repaired": repaired,
         }
         if repair_summary:
             explanation["repairSummary"] = repair_summary
+        plan["id"] = f"plan:{execution_id}"
+        finished_at = now()
+        telemetry = {"executionId": execution_id, "traceId": trace_id,
+                     "planId": plan["id"], "model": os.getenv("LLM_MODEL", "loglanmamış"),
+                     "promptVersion": "execution-plan-v1", "applicationVersion": os.getenv("APP_VERSION", "development"),
+                     "environment": os.getenv("APP_ENV", "development"), "startedAt": started_at,
+                     "finishedAt": finished_at, "durationMs": round((time.perf_counter() - started_clock) * 1000),
+                     "missingFields": ["HTTP request ID", "MCP server sürümü", "tool sürümü", "idempotency key"]}
         response = {"conversationId": conversation_id, "permissionLevel": permission, "plan": plan,
                     "trace": trace, "finalAnswer": answer, "pendingDraftId": state.pending_draft_id,
                     "succeeded": bool(execution.get("success")),
-                    "pendingReceiveIds": list(state.pending_receive_ids), "explanation": explanation}
+                    "pendingReceiveIds": list(state.pending_receive_ids), "explanation": explanation,
+                    "telemetry": telemetry}
         self.store.add_message(conversation_id, "assistant", answer, "success" if execution.get("success") else "failed", response)
         return response
 
@@ -454,6 +498,22 @@ class AgentApplication:
             "finalAnswer": answer,
             "pendingDraftId": state.pending_draft_id,
             "succeeded": False,
+            "explanation": {
+                "originalRequest": message[:4000], "requestSummary": message[:240],
+                "detectedIntent": "İsteği netleştir", "entities": [],
+                "missingInformation": [answer], "ambiguities": ["İstek güvenli ve çalıştırılabilir bir plana dönüştürülemedi."],
+                "assumptions": [], "goalTitle": "Ek bilgi iste", "goalExplanation": "Yanlış veya eksik işlem riskini önlemek için CLARIFY seçildi.",
+                "goalReasons": ["Host plan doğrulaması başarısız oldu.", "Otomatik plan onarımı da geçerli bir plan üretemedi."],
+                "alternativeExplanation": "ORDER veya başka bir işlem hedefi, gerekli bilgiler doğrulanamadığı için seçilmedi.",
+                "confidence": "Düşük — kullanıcı açıklaması gerekli", "permissionExplanation": f"{permission} sınırı korundu; hiçbir tool çalıştırılmadı.",
+                "permissionSource": "Host yazma-niyeti politikası", "permissionReason": "İstek netleşene kadar işlem yapılmadı.",
+                "allowedActions": ["Kullanıcıdan ek bilgi isteme"], "blockedActions": ["Tool çalıştırma", "Kalıcı veri değişikliği"],
+                "approvalExplanation": "Onay değil, açıklayıcı bilgi bekleniyor.", "riskLevel": "Düşük — değişiklik yapılmadı",
+                "findings": [], "decisionSummary": answer[:300], "changes": [], "userNextAction": "İstenen ürün, ölçüt ve çıktı türünü belirtin.",
+                "rollback": "Değişiklik yapılmadığı için geri alma gerekmiyor.",
+                "safetyChecks": [{"label": "Plan doğrulama", "status": "blocked", "detail": "Geçersiz plan güvenli biçimde durduruldu."}],
+                "warnings": ["Plan doğrulama ayrıntısı teknik plan.detail alanında saklandı."], "repaired": False,
+            },
         }
         self.store.add_message(conversation_id, "assistant", answer, "failed", response)
         return response
