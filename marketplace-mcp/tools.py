@@ -456,6 +456,19 @@ async def list_tools() -> list[Tool]:
             }
         ),
         Tool(
+            name="list_marketplace_orders",
+            description=(
+                "List all orders placed on the marketplace with their current status "
+                "(PENDING, SHIPPED, DELIVERED) and expected delivery date. "
+                "Use this to check delivery progress of purchases."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            }
+        ),
+        Tool(
             name="get_order_status",
             description="Use ONLY when the user explicitly asks to check, view, or track an existing order.",
             inputSchema={
@@ -1044,6 +1057,20 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[TextConten
                         text=json.dumps({"success": False, "error": f"Error placing order: {str(e)}"}, ensure_ascii=False)
                     )
                 ]
+
+        elif name == "list_marketplace_orders":
+            orders = await service.list_orders()
+            result = {
+                "success": True,
+                "count": len(orders),
+                "orders": [o.model_dump() for o in orders]
+            }
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(result, ensure_ascii=False)
+                )
+            ]
 
         elif name == "get_order_status":
             order_id = arguments.get("order_id")

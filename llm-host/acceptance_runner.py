@@ -86,10 +86,12 @@ SCENARIOS = [
     {
         "id": "pending_orders_receive",
         "kaynak": "Taslak örnek komut 5",
-        "known_gap": "Bekleyen siparişleri listeleyen MCP tool'u yok; "
-                     "sistem doğru davranıp açıklama istiyor (CLARIFY).",
+        "writes": True,
         "turns": ["Bekleyen siparişleri kontrol et ve teslim edilen ürünleri stoğa ekle."],
-        "expect": {"goals": ["INFO", "REASON", "PLAN"], "tools_required": []},
+        "expect": {
+            "goals": ["RECEIVE"],
+            "tools_required": ["list_incoming_orders", "receive_order"],
+        },
     },
     {
         "id": "balanced_objective",

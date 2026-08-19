@@ -63,6 +63,14 @@ class ProductService:
             response.raise_for_status()
             return IncomingOrder(**response.json())
 
+    async def list_incoming_orders(self, pending_only: bool = True) -> List[IncomingOrder]:
+        """Depoya beklenen siparisleri listeler (varsayilan: yalnizca PENDING)."""
+        path = "/api/orders/pending" if pending_only else "/api/orders"
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{self.base_url}{path}")
+            response.raise_for_status()
+            return [IncomingOrder(**item) for item in response.json()]
+
     @staticmethod
     def _normalize_expected(value: Optional[str]) -> Optional[str]:
         """Backend LocalDateTime bekler; "2026-08-23" gibi gun-only deger 400 uretir."""

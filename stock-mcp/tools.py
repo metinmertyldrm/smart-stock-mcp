@@ -145,6 +145,27 @@ async def list_tools() -> list[Tool]:
             }
         ),
         Tool(
+            name="list_incoming_orders",
+            description=(
+                "List incoming (expected) stock orders for the warehouse. "
+                "Use this when the user asks about pending/awaited deliveries, "
+                "e.g. 'bekleyen siparişleri kontrol et'. Each entry has an order id, "
+                "product, quantity, status and expectedDeliveryDate; feed the id to "
+                "receive_order once the goods have arrived."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "pending_only": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "True: only PENDING orders. False: all orders."
+                    }
+                },
+                "additionalProperties": False,
+            }
+        ),
+        Tool(
             name="receive_order",
             description="Receive a pending incoming order, adding its quantity to current stock level.",
             inputSchema={
@@ -283,6 +304,23 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[TextConten
                     "success": False,
                     "error": "Failed to create incoming order"
                 }
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(result, ensure_ascii=False)
+                )
+            ]
+
+        elif name == "list_incoming_orders":
+            pending_only = arguments.get("pending_only")
+            if pending_only is None:
+                pending_only = True
+            orders = await service.list_incoming_orders(bool(pending_only))
+            result = {
+                "success": True,
+                "count": len(orders),
+                "orders": [o.model_dump() for o in orders]
+            }
             return [
                 TextContent(
                     type="text",

@@ -181,6 +181,7 @@ GOALS:
 - PLAN: Build procurement plan (ends with create_procurement_plan).
 - DRAFT: Create purchase draft (ends with create_purchase_draft).
 - ORDER: Finalize draft (ends with place_order).
+- RECEIVE: Check awaited deliveries and take them into stock (must include receive_order).
 
 EXAMPLES:
 1. "iPhone 4 mü 3 mü almalıyım?" -> goal: REASON, steps:
@@ -217,6 +218,11 @@ EXAMPLES:
     - step_2: create_procurement_plan(arguments: items={{"$from": "step_1.products", "$transform": "low_stock_products_to_items"}}, objective="CHEAPEST")
     - step_3: create_purchase_draft(arguments: items={{"$from": "step_2", "$transform": "plan_to_draft_items"}})
 12. "İki planı karşılaştır, farklar nedir?" (when both cheapest and fastest plans are cached) -> goal: REASON, steps: [], context_sources: ["last_cheapest_plan", "last_fastest_plan"]
+13. "Bekleyen siparişleri kontrol et" -> goal: INFO, steps:
+    - step_1: list_incoming_orders(arguments: pending_only=true)
+14. "Bekleyen siparişleri kontrol et ve teslim edilen ürünleri stoğa ekle" -> goal: RECEIVE, steps:
+    - step_1: list_incoming_orders(arguments: pending_only=true)
+    - step_2: receive_order(arguments: order_id={{"$from": "step_1.orders.0.id"}})
 
 DYNAMIC REFERENCING: {{"$from": "step_id.path", "$transform": "replenishments_to_items"|"plan_to_draft_items"|"out_of_stock_products_to_items"|"low_stock_products_to_items"|"order_to_incoming_items"}} or {{"$from_context": "last_reference.id"}} or {{"$from_context": "pending_draft_id"}}
 
@@ -269,7 +275,14 @@ RULES:
     NEVER generate or include the "final_response" field in your JSON output. The host system will construct the final response from execution results.
 20. LANGUAGE RULE:
     The "answer" and "final_response" fields (including in the assistant history) MUST always be in Turkish. Never generate or output Chinese, English, or any other language for these fields.
-21. ORDER GOAL STEPS RULE:
+21. RECEIVE GOAL RULE:
+    Use goal="RECEIVE" when the user wants awaited/pending deliveries taken into stock
+    ("teslim edilenleri stoğa ekle", "gelen siparişleri teslim al"). List them first with
+    list_incoming_orders, then call receive_order with an order id from that list.
+    receive_order changes warehouse stock, so never call it unless the user asked for it.
+    To only VIEW awaited deliveries without taking them in, use goal="INFO" with
+    list_incoming_orders alone.
+22. ORDER GOAL STEPS RULE:
     For the "ORDER" goal, steps MUST NOT be empty. You must include a step calling the 'place_order' tool with the draft_id argument resolved from pending_draft_id,
     followed by a create_incoming_orders step that consumes the place_order result via the order_to_incoming_items transform.
 

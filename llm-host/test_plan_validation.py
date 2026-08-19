@@ -92,3 +92,35 @@ class GoalRuleTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReceiveGoalTest(unittest.TestCase):
+    """Teslim alma hem okuma hem yazma içerir; INFO salt okunur olduğu için
+    bu akışın kendi hedefi var."""
+
+    STEPS = [
+        {"id": "step_1", "tool": "list_incoming_orders", "arguments": {"pending_only": True}},
+        {"id": "step_2", "tool": "receive_order",
+         "arguments": {"order_id": {"$from": "step_1.orders.0.id"}}},
+    ]
+
+    def test_list_then_receive_is_accepted(self):
+        parsed = app.parse_execution_plan(plan_json(goal="RECEIVE", steps=self.STEPS))
+        self.assertEqual(len(parsed["steps"]), 2)
+
+    def test_receive_goal_must_actually_receive(self):
+        with self.assertRaises(ValueError):
+            app.parse_execution_plan(plan_json(goal="RECEIVE", steps=self.STEPS[:1]))
+
+    def test_receive_goal_cannot_smuggle_other_writes(self):
+        steps = self.STEPS + [{"id": "step_3", "tool": "place_order", "arguments": {}}]
+        with self.assertRaises(ValueError):
+            app.parse_execution_plan(plan_json(goal="RECEIVE", steps=steps))
+
+    def test_listing_alone_is_allowed_as_info(self):
+        parsed = app.parse_execution_plan(plan_json(goal="INFO", steps=self.STEPS[:1]))
+        self.assertEqual(parsed["steps"][0]["tool"], "list_incoming_orders")
+
+    def test_info_still_rejects_receive_order(self):
+        with self.assertRaises(ValueError):
+            app.parse_execution_plan(plan_json(goal="INFO", steps=self.STEPS))

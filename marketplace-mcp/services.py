@@ -80,6 +80,13 @@ class MarketplaceService:
             response.raise_for_status()
             return MarketplaceOrderResponse(**response.json())
 
+    async def list_orders(self) -> List[MarketplaceOrderResponse]:
+        """Pazaryerinde verilmis tum siparisleri listeler."""
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{self.base_url}/api/marketplace/orders")
+            response.raise_for_status()
+            return [MarketplaceOrderResponse(**item) for item in response.json()]
+
     async def get_order_details(self, order_id: int) -> MarketplaceOrderResponse:
         """Fetch details and status of an order."""
         async with httpx.AsyncClient() as client:

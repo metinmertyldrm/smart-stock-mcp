@@ -20,7 +20,9 @@ INFO_TOOLS = {
     "compare_offers",
     "search_offers",
     "list_sellers",
-    "get_order_status"
+    "get_order_status",
+    "list_incoming_orders",
+    "list_marketplace_orders",
 }
 
 
@@ -142,7 +144,9 @@ def parse_execution_plan(text: str) -> dict:
         "compare_offers",
         "search_offers",
         "list_sellers",
-        "get_order_status"
+        "get_order_status",
+        "list_incoming_orders",
+        "list_marketplace_orders",
     }
 
     if goal == "INFO":
@@ -171,6 +175,22 @@ def parse_execution_plan(text: str) -> dict:
             raise ValueError(
                 "ORDER planının son adımı 'place_order' veya 'create_incoming_orders' olmalıdır."
             )
+
+    elif goal == "RECEIVE":
+        # Teslim alma hem okuma hem yazma icerir; INFO salt okunur oldugu icin
+        # bu akisin kendi hedefi var.
+        if not steps:
+            raise ValueError("RECEIVE planında en az bir adım bulunmalıdır.")
+        if not any(step["tool"] == "receive_order" for step in steps):
+            raise ValueError("RECEIVE planı 'receive_order' adımı içermelidir.")
+        allowed = {"list_incoming_orders", "list_marketplace_orders", "get_order_status",
+                   "receive_order"}
+        for step in steps:
+            if step["tool"] not in allowed:
+                raise ValueError(
+                    f"RECEIVE planı yalnızca teslim alma araçlarını içerebilir. "
+                    f"Geçersiz araç: {step['tool']}"
+                )
 
     elif goal == "REASON":
         for step in steps:
