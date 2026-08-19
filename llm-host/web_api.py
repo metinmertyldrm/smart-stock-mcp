@@ -173,6 +173,45 @@ def summary(value):
     return text[:300] + ("…" if len(text) > 300 else "")
 
 
+TOOL_EXPLANATIONS = {
+    "list_low_stock": ("Kritik stokları kontrol et", "Minimum stok seviyesinin altındaki ürünleri belirlemek için çağrıldı."),
+    "list_out_of_stock": ("Tükenen stokları kontrol et", "Stokta kalmayan ürünleri belirlemek için çağrıldı."),
+    "calculate_replenishment": ("Eksik miktarları hesapla", "Her ürünün hedef stok seviyesine ulaşması için gereken miktarı hesaplamak amacıyla çağrıldı."),
+    "compare_offers": ("Teklifleri karşılaştır", "Uygun satıcı tekliflerini maliyet ve teslimat koşullarına göre karşılaştırmak için çağrıldı."),
+    "create_procurement_plan": ("Satın alma planını oluştur", "Gereken miktarları seçilen optimizasyon hedefine göre karşılayan teklif kombinasyonunu oluşturmak için çağrıldı."),
+    "create_purchase_draft": ("Sipariş taslağı oluştur", "Seçilen satın alma planını kullanıcı onayından önce taslağa dönüştürmek için çağrıldı."),
+    "place_order": ("Siparişi ver", "Kullanıcının onayladığı taslağı gerçek siparişe dönüştürmek için çağrıldı."),
+    "list_incoming_orders": ("Bekleyen teslimatları kontrol et", "Teslim alınabilecek bekleyen siparişleri belirlemek için çağrıldı."),
+    "receive_orders": ("Ürünleri stoğa al", "Kullanıcının onayladığı teslimatların stok miktarlarına işlenmesi için çağrıldı."),
+}
+FALLBACK_PURPOSE = "Bu adım planın bir sonraki işlemi için gerekli veriyi sağlamak üzere çalıştırıldı."
+SENSITIVE_KEYS = {"password", "token", "secret", "credential", "authorization", "system_prompt", "thinking"}
+
+
+def safe_value(value, depth=0):
+    """Return bounded, display-safe structured data; never expose secret-like fields."""
+    if depth > 3:
+        return "…"
+    if isinstance(value, dict):
+        return {str(k): "[gizlendi]" if any(x in str(k).casefold() for x in SENSITIVE_KEYS)
+                else safe_value(v, depth + 1) for k, v in list(value.items())[:20]}
+    if isinstance(value, list):
+        return [safe_value(v, depth + 1) for v in value[:20]]
+    return value if isinstance(value, (int, float, bool)) or value is None else str(value)[:200]
+
+
+def result_findings(value):
+    if not isinstance(value, dict):
+        return [summary(value)] if value not in (None, "") else []
+    findings = []
+    for key, val in list(value.items())[:8]:
+        if isinstance(val, list):
+            findings.append(f"{key}: {len(val)} kayıt")
+        elif isinstance(val, (str, int, float, bool)) and key.casefold() not in SENSITIVE_KEYS:
+            findings.append(f"{key}: {str(val)[:120]}")
+    return findings[:5]
+
+
 class AgentApplication:
     def __init__(self, client, llm, store=None):
         self.client, self.llm = client, llm
@@ -199,6 +238,8 @@ class AgentApplication:
         cached = {k: v for k, v in {"last_cheapest_plan": state.last_cheapest_plan, "last_fastest_plan": state.last_fastest_plan}.items() if is_plan_valid(v)}
         system_prompt = get_execution_plan_prompt(tools, state.last_plan, state, cached)
         raw = self.llm.generate([{"role": "system", "content": system_prompt}, *state.history, {"role": "user", "content": message}])
+        repaired = False
+        repair_summary = None
         try:
             plan = parse_execution_plan(raw)
             validate_plan_against_state(plan, state)
@@ -207,13 +248,20 @@ class AgentApplication:
             plan = self.repair_invalid_plan(system_prompt, message, raw, exc, state, conversation_id)
             if plan is None:
                 return self.clarification_response(conversation_id, message, permission, state, exc)
+            repaired = True
+            repair_summary = "İlk plan doğrulama kurallarını karşılamadığı için güvenli ve çalıştırılabilir bir planla değiştirildi."
         if permission == "PLAN" and any(s.get("tool") in WRITE_TOOLS for s in plan.get("steps", [])):
             raise HTTPException(403, "Salt okunur istekte yazma işlemi engellendi.")
         self.store.add_message(conversation_id, "user", message)
-        started = time.perf_counter()
         execution = await execute_plan(plan, self.client, names, state)
         if not execution.get("success"):
-            plan, execution = await self.repair(system_prompt, message, plan, execution, names, state, permission, conversation_id)
+            previous_tools = [s.get("tool") for s in plan.get("steps", [])]
+            new_plan, new_execution = await self.repair(system_prompt, message, plan, execution, names, state, permission, conversation_id)
+            if new_execution.get("success") and new_plan is not plan:
+                repaired = True
+                new_tools = [s.get("tool") for s in new_plan.get("steps", [])]
+                repair_summary = f"Başarısız plan düzeltildi. Önceki araçlar: {', '.join(previous_tools)}; yeni araçlar: {', '.join(new_tools)}."
+            plan, execution = new_plan, new_execution
         trace = []
         results = execution.get("results", {})
         for index, step in enumerate(plan.get("steps", [])):
@@ -228,7 +276,18 @@ class AgentApplication:
                 detail = results.get(sid)
             else:
                 detail = "Önceki adım başarısız olduğu için çalıştırılmadı."
-            trace.append({"stepId": sid, "tool": step.get("tool"), "arguments": step.get("arguments", {}), "status": status, "resultSummary": summary(detail), "durationMs": round((time.perf_counter() - started) * 1000 / max(1, len(plan.get("steps", []))))})
+            tool = step.get("tool") or "unknown"
+            title, purpose = TOOL_EXPLANATIONS.get(tool, (tool.replace("_", " ").title(), FALLBACK_PURPOSE))
+            findings = result_findings(detail) if executed else []
+            trace.append({"stepId": sid, "tool": tool, "title": title, "purpose": purpose,
+                          "arguments": safe_value(step.get("arguments", {})),
+                          "inputSummary": summary(safe_value(step.get("arguments", {}))), "status": status,
+                          "resultSummary": summary(safe_value(detail)), "findings": findings,
+                          "interpretation": "Araç sonucu başarıyla alındı." if executed else detail,
+                          "impactOnDecision": "Sonuç, sonraki plan adımının girdisini oluşturdu." if executed else "Plan bu adımdan sonra ilerletilemedi.",
+                          "nextAction": "Planın sıradaki adımına geçildi." if executed else None,
+                          "durationMs": execution.get("durations_ms", {}).get(sid),
+                          "error": str(execution.get("error"))[:300] if failed else (detail if status == "skipped" else None)})
         final = execution.get("last_result", {})
         last_tool = plan.get("steps", [{}])[-1].get("tool") if plan.get("steps") else None
         if execution.get("success"):
@@ -315,10 +374,31 @@ class AgentApplication:
             ]
         elif received_step_id is not None:
             state.pending_receive_ids = []
+        pending = bool(state.pending_draft_id or state.pending_receive_ids)
+        ordered = ordered_step_id is not None
+        stock_changed = received_step_id is not None
+        safety_checks = [
+            {"label": "Salt okunur sınırı", "status": "passed", "detail": "PLAN izninde değişiklik yapan araçlar host tarafından engellenir." if permission == "PLAN" else "FULL işlem sınırları uygulandı."},
+            {"label": "Plan doğrulama", "status": "passed" if execution.get("success") else "blocked", "detail": "Plan host kurallarıyla doğrulandı." if execution.get("success") else "Plan güvenli biçimde tamamlanamadı."},
+            {"label": "Kullanıcı onayı", "status": "pending" if pending else "passed", "detail": "Kritik işlem kullanıcı onayı bekliyor." if pending else "Bekleyen kullanıcı onayı yok."},
+            {"label": "Sipariş durumu", "status": "warning" if ordered else "passed", "detail": "Onaylanan sipariş verildi." if ordered else "Sipariş verilmedi."},
+            {"label": "Stok değişikliği", "status": "warning" if stock_changed else "passed", "detail": "Onaylanan teslimatlar stoğa işlendi." if stock_changed else "Stok değiştirilmedi."},
+        ]
+        all_findings = [finding for item in trace for finding in item.get("findings", [])][:8]
+        explanation = {
+            "requestSummary": message[:240], "goalTitle": conversation_title(message),
+            "goalExplanation": f"{plan.get('goal', 'PLAN')} hedefi için {len(plan.get('steps', []))} adımlı operasyon planı uygulandı.",
+            "permissionExplanation": "İstek bilgi alma veya planlama niteliğinde olduğu için değişiklik yapan araçlara izin verilmedi." if permission == "PLAN" else "İstek değişiklik yapan bir işlem içeriyor; kritik adımlar kullanıcı onayı ve host doğrulamasına tabidir.",
+            "findings": all_findings, "decisionSummary": answer[:300], "safetyChecks": safety_checks,
+            "warnings": ([] if execution.get("success") else ["Plan tamamlanamadı."]) + (["Kullanıcı onayı bekleniyor."] if pending else []),
+            "repaired": repaired,
+        }
+        if repair_summary:
+            explanation["repairSummary"] = repair_summary
         response = {"conversationId": conversation_id, "permissionLevel": permission, "plan": plan,
                     "trace": trace, "finalAnswer": answer, "pendingDraftId": state.pending_draft_id,
                     "succeeded": bool(execution.get("success")),
-                    "pendingReceiveIds": list(state.pending_receive_ids)}
+                    "pendingReceiveIds": list(state.pending_receive_ids), "explanation": explanation}
         self.store.add_message(conversation_id, "assistant", answer, "success" if execution.get("success") else "failed", response)
         return response
 

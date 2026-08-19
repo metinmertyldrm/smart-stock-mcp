@@ -2,6 +2,7 @@ import os
 import json
 import re
 import asyncio
+import time
 from mcp_client import MCPClient
 from llm import LLMService
 from prompt import get_execution_plan_prompt, get_reasoning_prompt
@@ -1045,6 +1046,7 @@ async def execute_plan(plan: dict, client: MCPClient, available_tool_names: set[
         }
 
     execution_results = {}
+    step_durations = {}
     # REASON plans may intentionally contain no tool calls and use previously
     # cached conversation context instead.  Materialize that context as normal
     # execution results so callers can pass it to the reasoning layer.  This
@@ -1082,6 +1084,7 @@ async def execute_plan(plan: dict, client: MCPClient, available_tool_names: set[
                 "results": execution_results,
             }
 
+        step_started = time.perf_counter()
         try:
             arguments = resolve_step_arguments(
                 step.get("arguments", {}),
@@ -1125,6 +1128,7 @@ async def execute_plan(plan: dict, client: MCPClient, available_tool_names: set[
             print(f"[PLAN EXECUTOR] {step_id}: {tool_name}({arguments})")
             
             raw_result = await client.call_tool(tool_name, arguments)
+            step_durations[step_id] = round((time.perf_counter() - step_started) * 1000)
             normalized = normalize_tool_result(raw_result)
 
             if not normalized.get("success", True):
@@ -1134,6 +1138,7 @@ async def execute_plan(plan: dict, client: MCPClient, available_tool_names: set[
                     "failed_tool": tool_name,
                     "error": normalized.get("error") or normalized.get("message") or "Tool başarısız oldu.",
                     "results": execution_results,
+                    "durations_ms": step_durations,
                 }
 
             result_data = normalized.get("data") if isinstance(normalized.get("data"), dict) else normalized
@@ -1174,12 +1179,14 @@ async def execute_plan(plan: dict, client: MCPClient, available_tool_names: set[
                     save_reference(state, "comparison_response", tool_name, result_data)
 
         except Exception as exc:
+            step_durations[step_id] = round((time.perf_counter() - step_started) * 1000)
             return {
                 "success": False,
                 "failed_step": step_id,
                 "failed_tool": tool_name,
                 "error": str(exc),
                 "results": execution_results,
+                "durations_ms": step_durations,
             }
 
     steps = plan.get("steps", [])
@@ -1188,6 +1195,7 @@ async def execute_plan(plan: dict, client: MCPClient, available_tool_names: set[
             "success": True,
             "results": execution_results,
             "last_result": execution_results,
+            "durations_ms": step_durations,
         }
 
     return {
@@ -1197,6 +1205,7 @@ async def execute_plan(plan: dict, client: MCPClient, available_tool_names: set[
             execution_results.get(steps[-1].get("id"))
             or execution_results.get(f"step_{len(steps)}")
         ),
+        "durations_ms": step_durations,
     }
 
 

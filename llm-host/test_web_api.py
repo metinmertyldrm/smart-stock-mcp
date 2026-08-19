@@ -9,7 +9,8 @@ if importlib.util.find_spec("fastapi") is None:
     raise unittest.SkipTest("FastAPI optional dependency is not installed")
 
 from app import CachedProcurementPlan, ConversationState
-from web_api import AgentApplication, ChatRequest, ConversationStore, conversation_title, now
+from web_api import (AgentApplication, ChatRequest, ConversationStore, FALLBACK_PURPOSE,
+                     TOOL_EXPLANATIONS, conversation_title, now, safe_value)
 
 
 class WebApiTest(unittest.TestCase):
@@ -72,6 +73,20 @@ class WebApiTest(unittest.TestCase):
         chat.assert_awaited_once_with(
             conversation["id"], "42 numaralı taslağı onayla ve siparişi oluştur", "owner"
         )
+
+    def test_tool_catalog_and_safe_fallback_are_deterministic(self):
+        self.assertEqual(TOOL_EXPLANATIONS["list_low_stock"][0], "Kritik stokları kontrol et")
+        self.assertIn("gerekli veriyi", FALLBACK_PURPOSE)
+        self.assertEqual(safe_value({"token": "secret", "items": [1, 2]}),
+                         {"token": "[gizlendi]", "items": [1, 2]})
+
+    def test_explanation_is_persisted_with_response_json(self):
+        conversation = self.store.create("owner", "Sohbet")
+        explanation = {"requestSummary": "stokları göster", "safetyChecks": []}
+        self.store.add_message(conversation["id"], "assistant", "Tamam",
+                               response={"finalAnswer": "Tamam", "explanation": explanation})
+        restored = self.store.get(conversation["id"], "owner")["messages"][0]["response"]
+        self.assertEqual(restored["explanation"], explanation)
 
     def test_natural_language_confirmation_allows_pending_write(self):
         conversation = self.store.create("owner", "Sohbet")
