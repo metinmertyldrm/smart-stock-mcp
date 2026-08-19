@@ -1468,7 +1468,12 @@ def format_procurement_plan(result: dict) -> str:
         allocations = item.get("allocations", [])
 
         if not allocations:
-            lines.append("   Uygun teklif bulunamadı.")
+            # Tool artik neden tahsis yapilamadigini soyluyor; kullaniciya da aktar.
+            reason = item.get("reason")
+            if reason:
+                lines.append(f"   Uygun teklif bulunamadı: {reason}")
+            else:
+                lines.append("   Uygun teklif bulunamadı.")
         else:
             lines.append("   Satıcı dağılımı:")
 

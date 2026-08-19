@@ -188,6 +188,26 @@ def allocate_across_offers(
         total_cost += subtotal
         remaining -= quantity
 
+    # Bos tahsisin sebebini soylemek hem kullaniciya hem onarim turundaki modele
+    # "neden olmadi" bilgisini verir; "uygun teklif yok" tek basina teshis birakmiyor.
+    reason = None
+    if not allocations:
+        if not offers:
+            reason = "Bu urun icin pazaryerinde hic teklif yok."
+        elif not eligible_offers:
+            in_stock = [o for o in offers if o.get("available_stock", 0) > 0]
+            if not in_stock:
+                reason = "Teklifler var ancak hicbirinde stok kalmamis."
+            else:
+                active = ", ".join(
+                    f"{key}={value}" for key, value in (filters or {}).items()
+                    if value not in (None, 0)
+                )
+                reason = ("Tum teklifler uygulanan filtrelere takildi"
+                          + (f" ({active})." if active else "."))
+        else:
+            reason = "Uygun teklif bulundu ancak tahsis edilebilir miktar yok."
+
     return {
         "success": len(allocations) > 0,
         "complete": remaining == 0,
@@ -196,6 +216,7 @@ def allocate_across_offers(
         "missing_quantity": remaining,
         "allocations": allocations,
         "overall_total": total_cost,
+        "reason": reason,
     }
 
 
@@ -779,6 +800,26 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[TextConten
                 ]
             filters = arguments.get("filters") or {}
 
+            # Sekli bozuk girdi asagida ham AttributeError uretiyordu
+            # ("'str' object has no attribute 'get'") ve onarim turundaki modele
+            # hicbir sey anlatmiyordu. Artik ne bekledigimizi acikca soyluyoruz.
+            if items is not None and not isinstance(items, list):
+                return [TextContent(type="text", text=json.dumps({
+                    "success": False,
+                    "error": ("'items' must be a list of objects like "
+                              '[{"product_id": 1, "quantity": 5}]; received '
+                              f"{type(items).__name__}."),
+                }, ensure_ascii=False))]
+
+            malformed = [e for e in (items or []) if not isinstance(e, dict)]
+            if malformed:
+                return [TextContent(type="text", text=json.dumps({
+                    "success": False,
+                    "error": ("Each entry in 'items' must be an object with "
+                              "'product_id' and 'quantity'. Received: "
+                              + json.dumps(malformed[:3], ensure_ascii=False)),
+                }, ensure_ascii=False))]
+
             if not items:
                 return [
                     TextContent(
@@ -865,7 +906,8 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[TextConten
                     "missing_quantity": alloc_res["missing_quantity"],
                     "complete": alloc_res["complete"],
                     "allocations": alloc_res["allocations"],
-                    "total_cost": alloc_res["overall_total"]
+                    "total_cost": alloc_res["overall_total"],
+                    "reason": alloc_res.get("reason"),
                 })
                 overall_total += alloc_res["overall_total"]
 
