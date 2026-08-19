@@ -14,7 +14,8 @@ from pydantic import BaseModel, Field
 
 from app import (MARKETPLACE_SERVER_PATH, STOCK_SERVER_PATH, CachedProcurementPlan,
                  ConversationState, clean_tool_results_for_reasoning, execute_plan,
-                 format_final_answer, format_procurement_plan, format_purchase_draft,
+                 format_final_answer, format_order_confirmation, format_procurement_plan,
+                 format_purchase_draft,
                  build_repair_instruction, get_execution_plan_prompt, is_plan_valid,
                  parse_execution_plan,
                  resolve_step_arguments, validate_plan_against_state)
@@ -211,12 +212,26 @@ class AgentApplication:
                 elif cached_plan.objective == "FASTEST":
                     state.last_fastest_plan = cached_plan
 
+        # Zincir create_incoming_orders ile bitebildigi icin "son adim place_order mi"
+        # kontrolu yetmiyor; siparis adimini adiyla ariyoruz.
+        ordered_step_id = None
+        if execution.get("success"):
+            for index, step in enumerate(plan.get("steps", [])):
+                if step.get("tool") == "place_order":
+                    ordered_step_id = step.get("id") or f"step_{index + 1}"
+
         goal = plan.get("goal", "").upper()
         if execution.get("success") and goal == "REASON":
             reasoning_data = clean_tool_results_for_reasoning(execution.get("results", {}))
             answer = self.llm.generate([{"role": "system", "content": get_reasoning_prompt(message, reasoning_data)}]).strip()
         elif goal == "CHAT":
             answer = final.get("chat_answer", "")
+        elif ordered_step_id is not None:
+            # ORDER zinciri: ozet place_order + create_incoming_orders sonuclarindan kurulur.
+            incoming = next((results.get(step.get("id") or f"step_{index + 1}")
+                             for index, step in enumerate(plan.get("steps", []))
+                             if step.get("tool") == "create_incoming_orders"), None)
+            answer = format_order_confirmation(results.get(ordered_step_id) or {}, incoming)
         else:
             answer = format_purchase_draft(final) if last_tool == "create_purchase_draft" else format_procurement_plan(final) if last_tool == "create_procurement_plan" else format_final_answer(final)
         if not execution.get("success"):
@@ -236,7 +251,8 @@ class AgentApplication:
                     draft_id = candidate
         if draft_id:
             state.pending_draft_id = int(draft_id)
-        if execution.get("success") and last_tool == "place_order":
+        if ordered_step_id is not None:
+            # Siparis verildi: taslak artik bekleyen degil, onay dugmesi kaybolmali.
             state.pending_draft_id = None
         response = {"conversationId": conversation_id, "permissionLevel": permission, "plan": plan,
                     "trace": trace, "finalAnswer": answer, "pendingDraftId": state.pending_draft_id,

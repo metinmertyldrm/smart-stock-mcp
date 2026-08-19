@@ -146,6 +146,52 @@ class PendingDraftTest(unittest.TestCase):
         self.assertIsNone(response["pendingDraftId"])
 
 
+class OrderConfirmationTest(unittest.TestCase):
+    """Zincir create_incoming_orders ile bittiği için iki şey bozulmuştu:
+    cevap ham JSON basıyordu ve bekleyen taslak temizlenmiyordu."""
+
+    ORDER_PLAN = json.dumps({"type": "execution_plan", "goal": "ORDER", "steps": [
+        {"id": "step_1", "tool": "place_order",
+         "arguments": {"draft_id": {"$from_context": "pending_draft_id"}}},
+        {"id": "step_2", "tool": "create_incoming_orders",
+         "arguments": {"items": {"$from": "step_1", "$transform": "order_to_incoming_items"}}}]})
+
+    def agent_with_state(self):
+        client = FakeMCPClient({
+            "place_order": {"success": True, "id": 1, "draftId": 5, "totalCost": 536700.0,
+                            "status": "PENDING", "expectedDeliveryDate": "2026-08-23T10:39:13",
+                            "items": [{"id": 1, "product": {"id": 1, "name": "iPhone 15 Pro 128GB"},
+                                       "quantity": 8, "seller": {"name": "ElectroShop"},
+                                       "price": 50500.0, "shippingFee": 0.0, "deliveryTimeDays": 3}]},
+            "create_incoming_orders": {"success": True, "count": 2, "orders": [
+                {"id": 2, "product": {"id": 1, "name": "iPhone 15 Pro 128GB"}, "quantity": 7},
+                {"id": 5, "product": {"id": 1, "name": "iPhone 15 Pro 128GB"}, "quantity": 1}]},
+        })
+        agent = web_api.AgentApplication(client, ScriptedLLM(self.ORDER_PLAN), temp_store(self))
+        state = web_api.ConversationState()
+        state.pending_draft_id = 5
+        agent.states["c1"] = state
+        return agent
+
+    def test_answer_is_a_summary_not_raw_json(self):
+        response = run(self.agent_with_state().chat("c1", "onaylıyorum"))
+        answer = response["finalAnswer"]
+
+        self.assertIn("Sipariş oluşturuldu", answer)
+        self.assertIn("#1", answer)
+        self.assertIn("2026-08-23", answer)
+        self.assertIn("iPhone 15 Pro 128GB: 8 adet", answer)   # 7 + 1 birleştirildi
+        self.assertNotIn('"success"', answer)
+        self.assertNotIn("stockQuantity", answer)
+
+    def test_pending_draft_is_cleared_after_the_order(self):
+        """Zincir place_order ile bitmediği için taslak temizlenmiyordu; onay
+        düğmesi sipariş verildikten sonra da ekranda kalıyordu."""
+        response = run(self.agent_with_state().chat("c1", "onaylıyorum"))
+
+        self.assertIsNone(response["pendingDraftId"])
+
+
 class PermissionTest(unittest.TestCase):
     def test_order_is_blocked_without_pending_draft(self):
         order_plan = json.dumps({"type": "execution_plan", "goal": "ORDER", "steps": [

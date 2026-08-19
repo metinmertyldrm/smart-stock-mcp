@@ -1531,7 +1531,19 @@ def format_purchase_draft(draft: dict) -> str:
         else:
             p_name = item.get("product_name") or item.get("product") or "Bilinmeyen Ürün"
         qty = item.get("quantity") or 0
-        lines.append(f"- {p_name}: {qty} adet")
+
+        # Ayni urun birden fazla saticiya bolunebiliyor; satici adi olmadan
+        # iki satir tekrar gibi gorunuyor.
+        seller = item.get("seller")
+        seller_name = seller.get("name") if isinstance(seller, dict) else item.get("seller_name")
+        price = item.get("price")
+        detail = ""
+        if seller_name:
+            detail = f" — {seller_name}"
+            if isinstance(price, (int, float)):
+                detail += f", birim {price:,.2f} TL"
+
+        lines.append(f"- {p_name}: {qty} adet{detail}")
         
     t_cost = draft.get("totalCost") or draft.get("total_cost") or 0.0
     lines.append(f"\nToplam tutar: {t_cost:,.2f} TL\n")
@@ -1540,6 +1552,47 @@ def format_purchase_draft(draft: dict) -> str:
 
 
 
+
+
+def format_order_confirmation(order: dict, incoming: dict | None = None) -> str:
+    """place_order + create_incoming_orders zincirini tek cumlelik ozete cevirir.
+
+    Aksi halde kullaniciya ham JSON basiliyordu.
+    """
+    lines = []
+
+    order_id = order.get("id") if isinstance(order, dict) else None
+    total = order.get("totalCost") or order.get("total_cost") if isinstance(order, dict) else None
+    header = "Sipariş oluşturuldu"
+    if order_id:
+        header += f" (#{order_id})"
+    if isinstance(total, (int, float)):
+        header += f" — toplam {total:,.2f} TL"
+    lines.append(header + ".")
+
+    expected = order.get("expectedDeliveryDate") if isinstance(order, dict) else None
+    if isinstance(expected, str) and expected:
+        lines.append(f"Tahmini teslim tarihi: {expected.split('T')[0]}")
+
+    orders = (incoming or {}).get("orders") if isinstance(incoming, dict) else None
+    if orders:
+        merged = {}
+        for entry in orders:
+            if not isinstance(entry, dict):
+                continue
+            product = entry.get("product")
+            name = product.get("name") if isinstance(product, dict) else "Bilinmeyen Ürün"
+            merged[name] = merged.get(name, 0) + (entry.get("quantity") or 0)
+
+        lines.append("")
+        lines.append("Beklenen stok olarak kaydedildi:")
+        for name, quantity in merged.items():
+            lines.append(f"- {name}: {quantity} adet")
+        lines.append("")
+        lines.append("Bu miktarlar ihtiyaç hesabına dahil edildi; "
+                     "teslim alındığında stoğa eklenecek.")
+
+    return "\n".join(lines)
 
 
 def truncate_tool_result_recursive(data, max_items=3):
