@@ -71,8 +71,14 @@ def allocate_across_offers(
     offers: list[dict],
     requested_quantity: int,
     objective: str,
-    filters: dict
+    filters: dict,
+    budget: float | None = None,
 ) -> dict:
+    """Tek bir urun icin teklifler arasinda tahsis yapar.
+
+    budget verilirse bu kalem icin harcanabilecek ust sinirdir; asilmaz,
+    gerekirse kismi tahsis yapilir.
+    """
     min_rating = filters.get("min_rating")
     max_delivery_days = filters.get("max_delivery_days")
     max_unit_price = filters.get("max_unit_price")
@@ -160,6 +166,7 @@ def allocate_across_offers(
     remaining = requested_quantity
     allocations = []
     total_cost = 0.0
+    budget_blocked = False
 
     for offer in eligible_offers:
         if remaining <= 0:
@@ -168,6 +175,19 @@ def allocate_across_offers(
         quantity = min(offer["available_stock"], remaining)
         if quantity == 0:
             continue
+
+        if budget is not None:
+            # Kargo once dusulur; kalan para kac adet aliyorsa o kadar alinir.
+            spendable = budget - total_cost - offer["shipping_cost"]
+            unit_price = offer["unit_price"]
+            affordable = int(spendable // unit_price) if unit_price > 0 else quantity
+            wanted = quantity
+            quantity = min(quantity, max(0, affordable))
+            if quantity < wanted:
+                # Sifirlanmasa bile butce yuzunden kisildiysa bunu bildirmeliyiz.
+                budget_blocked = True
+            if quantity == 0:
+                continue
 
         subtotal = (
             quantity * offer["unit_price"]
@@ -191,7 +211,10 @@ def allocate_across_offers(
     # Bos tahsisin sebebini soylemek hem kullaniciya hem onarim turundaki modele
     # "neden olmadi" bilgisini verir; "uygun teklif yok" tek basina teshis birakmiyor.
     reason = None
-    if not allocations:
+    if budget_blocked and remaining > 0:
+        reason = (f"Butce siniri nedeniyle {remaining} adet alinamadi "
+                  f"(bu kalem icin kalan butce {budget - total_cost:,.2f} TL).")
+    elif not allocations:
         if not offers:
             reason = "Bu urun icin pazaryerinde hic teklif yok."
         elif not eligible_offers:
@@ -201,7 +224,7 @@ def allocate_across_offers(
             else:
                 active = ", ".join(
                     f"{key}={value}" for key, value in (filters or {}).items()
-                    if value not in (None, 0)
+                    if value not in (None, 0) and key != "max_total_budget"
                 )
                 reason = ("Tum teklifler uygulanan filtrelere takildi"
                           + (f" ({active})." if active else "."))
@@ -506,6 +529,17 @@ async def list_tools() -> list[Tool]:
                                 "type": ["number", "null"],
                                 "minimum": 0,
                                 "description": "Maximum shipping cost filter."
+                            },
+                            "max_total_budget": {
+                                "type": ["number", "null"],
+                                "minimum": 0,
+                                "description": (
+                                    "Total budget cap for the WHOLE plan, in TL. "
+                                    "Items are allocated in the given order until the "
+                                    "budget runs out; partial allocation is allowed. "
+                                    "Use this for requests like 'total budget 50000'. "
+                                    "Do NOT use max_unit_price for a total budget."
+                                )
                             }
                         },
                         "additionalProperties": False,
@@ -832,6 +866,15 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[TextConten
             overall_total = 0.0
             complete_overall = True
 
+            # Butce plan seviyesinde bir kisit; kalemler sirayla islenir ve
+            # her kaleme kalan butce kadar tahsis yapilir.
+            budget_limit = filters.get("max_total_budget")
+            try:
+                budget_limit = float(budget_limit) if budget_limit else None
+            except (TypeError, ValueError):
+                budget_limit = None
+            budget_left = budget_limit
+
             for item in items:
                 product_id = item.get("product_id")
                 quantity = item.get("quantity")
@@ -892,8 +935,12 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[TextConten
                     offers_list,
                     quantity,
                     objective,
-                    filters
+                    filters,
+                    budget_left,
                 )
+
+                if budget_left is not None:
+                    budget_left = max(0.0, budget_left - alloc_res["overall_total"])
 
                 if not alloc_res["complete"]:
                     complete_overall = False
@@ -915,7 +962,11 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[TextConten
                 "success": True,
                 "complete": complete_overall,
                 "items": plan_items,
-                "overall_total": overall_total
+                "overall_total": overall_total,
+                **({"budget_limit": budget_limit,
+                    "budget_used": round(overall_total, 2),
+                    "budget_remaining": round(budget_left or 0.0, 2)}
+                   if budget_limit is not None else {}),
             }
 
             return [

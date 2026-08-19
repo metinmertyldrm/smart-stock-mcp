@@ -119,3 +119,56 @@ class AllocationReasonTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TotalBudgetTest(unittest.TestCase):
+    """Taslak komut 3: toplam bütçe tavanı. Bütçe hiçbir koşulda aşılmamalı."""
+
+    CHEAP = dict(OFFER, offer_id=9, unit_price=100.0, available_stock=100)
+    PRICEY = dict(OFFER, offer_id=8, unit_price=50000.0, available_stock=10)
+
+    def test_allocation_never_exceeds_budget(self):
+        result = tools.allocate_across_offers([self.PRICEY], 5, "CHEAPEST", {}, budget=120000.0)
+
+        self.assertLessEqual(result["overall_total"], 120000.0)
+        self.assertEqual(result["fulfilled_quantity"], 2)
+        self.assertIn("Butce siniri", result["reason"])
+
+    def test_shipping_is_paid_from_the_budget(self):
+        offer = dict(self.CHEAP, shipping_cost=50.0)
+
+        result = tools.allocate_across_offers([offer], 10, "CHEAPEST", {}, budget=250.0)
+
+        self.assertLessEqual(result["overall_total"], 250.0)
+        self.assertEqual(result["fulfilled_quantity"], 2)   # 50 kargo + 2x100
+
+    def test_no_budget_means_no_limit(self):
+        result = tools.allocate_across_offers([self.PRICEY], 5, "CHEAPEST", {})
+
+        self.assertEqual(result["fulfilled_quantity"], 5)
+        self.assertIsNone(result["reason"])
+
+    def test_budget_is_shared_across_the_whole_plan(self):
+        """Bütçe plan seviyesinde; ilk kalem tüketirse sonrakiler alamaz."""
+        result = call("create_procurement_plan", {
+            "items": [{"product_id": 1, "quantity": 1}, {"product_id": 2, "quantity": 1}],
+            "filters": {"max_total_budget": 1000},
+        })
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["budget_limit"], 1000)
+        self.assertLessEqual(result["budget_used"], 1000)
+
+    def test_budget_fields_absent_when_not_requested(self):
+        result = call("create_procurement_plan", {"items": [{"product_id": 1, "quantity": 1}]})
+
+        self.assertNotIn("budget_limit", result)
+
+    def test_budget_is_not_reported_as_an_offer_filter(self):
+        """max_total_budget bir teklif filtresi değil; 'filtrelere takıldı' metninde geçmemeli."""
+        result = tools.allocate_across_offers(
+            [dict(OFFER, delivery_days=9)], 5, "CHEAPEST",
+            {"max_delivery_days": 3, "max_total_budget": 99999})
+
+        self.assertIn("max_delivery_days=3", result["reason"])
+        self.assertNotIn("max_total_budget", result["reason"])

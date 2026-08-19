@@ -63,15 +63,12 @@ SCENARIOS = [
     {
         "id": "total_budget_limit",
         "kaynak": "Taslak örnek komut 3",
-        "known_gap": "create_procurement_plan toplam bütçe tavanı kabul etmiyor; "
-                     "model kısıtı max_unit_price'a kaydırıyor.",
         "turns": ["Toplam bütçe 50.000 TL'yi geçmeyecek şekilde eksik ürünleri tamamla."],
         "expect": {
             "goals": ["PLAN", "REASON"],
             "tools_required": ["create_procurement_plan"],
-            # Böyle bir parametre yok; senaryo bu yüzden başarısız olmalı ve eksiği belgelemeli.
             "arguments_contain": {"max_total_budget": 50000},
-            # Gözlenen yanlış davranış: bütçe, birim fiyat tavanı sanılıyor.
+            # Bütçeyi birim fiyat tavanı sanmak sessiz yanlış cevap üretir.
             "arguments_forbidden": {"max_unit_price": 50000},
         },
     },
