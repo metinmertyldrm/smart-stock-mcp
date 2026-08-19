@@ -342,11 +342,11 @@ def order_to_incoming_items(value):
     if not isinstance(items, list) or not items:
         raise ValueError("Siparis icinde kalem bulunamadi.")
 
-    # Java LocalDateTime "2026-08-20T14:30:00" seklinde gelir; tarih kismi yeterli.
+    # Backend CreateOrderRequestDto.expectedDeliveryDate bir LocalDateTime; saat
+    # kismini atarsak Jackson ayristiramiyor ve /api/orders 400 donuyor.
+    # Siparisin verdigi degeri oldugu gibi tasiyoruz.
     expected = value.get("expectedDeliveryDate") or value.get("expected_delivery_date")
-    expected_date = None
-    if isinstance(expected, str) and expected:
-        expected_date = expected.split("T")[0]
+    expected_date = expected if isinstance(expected, str) and expected else None
 
     result = []
     for item in items:

@@ -55,12 +55,20 @@ class ProductService:
         """Create a pending incoming/replenishment order."""
         async with httpx.AsyncClient() as client:
             payload = {"productId": product_id, "quantity": quantity}
-            if expected_delivery_date:
-                payload["expectedDeliveryDate"] = expected_delivery_date
+            normalized = self._normalize_expected(expected_delivery_date)
+            if normalized:
+                payload["expectedDeliveryDate"] = normalized
             
             response = await client.post(f"{self.base_url}/api/orders", json=payload)
             response.raise_for_status()
             return IncomingOrder(**response.json())
+
+    @staticmethod
+    def _normalize_expected(value: Optional[str]) -> Optional[str]:
+        """Backend LocalDateTime bekler; "2026-08-23" gibi gun-only deger 400 uretir."""
+        if not value:
+            return None
+        return value if "T" in value else f"{value}T00:00:00"
 
     async def create_incoming_orders(self, items: List[dict]) -> List[IncomingOrder]:
         """Create one pending incoming order per item (batch helper)."""
@@ -71,7 +79,9 @@ class ProductService:
                     "productId": item.get("product_id") or item.get("productId"),
                     "quantity": item.get("quantity"),
                 }
-                expected = item.get("expected_delivery_date") or item.get("expectedDeliveryDate")
+                expected = self._normalize_expected(
+                    item.get("expected_delivery_date") or item.get("expectedDeliveryDate")
+                )
                 if expected:
                     payload["expectedDeliveryDate"] = expected
 

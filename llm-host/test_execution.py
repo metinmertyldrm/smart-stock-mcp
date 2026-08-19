@@ -66,13 +66,20 @@ class ReferenceResolutionTest(unittest.TestCase):
 class OrderToIncomingItemsTest(unittest.TestCase):
     """place_order çıktısı create_incoming_orders girdisine dönüşmeli."""
 
-    def test_extracts_products_and_trims_datetime(self):
+    def test_keeps_the_full_datetime_from_the_order(self):
+        """Backend LocalDateTime bekliyor; saat kısmını atmak /api/orders'ı 400 yapıyordu."""
         items = app.order_to_incoming_items(PLACED_ORDER)
 
         self.assertEqual(items, [
-            {"product_id": 3, "quantity": 8, "expected_delivery_date": "2026-08-21"},
-            {"product_id": 9, "quantity": 30, "expected_delivery_date": "2026-08-21"},
+            {"product_id": 3, "quantity": 8, "expected_delivery_date": "2026-08-21T09:15:00"},
+            {"product_id": 9, "quantity": 30, "expected_delivery_date": "2026-08-21T09:15:00"},
         ])
+
+    def test_host_date_validation_accepts_a_full_datetime(self):
+        """execute_plan tarih doğrulaması datetime'ı reddetmemeli."""
+        from datetime import date
+        raw = "2026-08-21T09:15:00"
+        self.assertEqual(date.fromisoformat(raw.split("T")[0]), date(2026, 8, 21))
 
     def test_rejects_orders_without_items(self):
         with self.assertRaises(ValueError):
@@ -101,6 +108,58 @@ class ProcurementChainTest(unittest.TestCase):
         registered = client.calls[1][1]["items"]
         self.assertEqual([item["product_id"] for item in registered], [3, 9])
         self.assertEqual([item["quantity"] for item in registered], [8, 30])
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class IncomingOrderPayloadTest(unittest.TestCase):
+    """stock-mcp servisinin backend'e gönderdiği tarih biçimi.
+
+    Regresyon: `place_order` LocalDateTime döndürüyor, biz gün olarak kırpınca
+    /api/orders 400 veriyordu.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        import os
+        import sys
+        import types
+
+        # httpx kurulu olmayabilir; yalnızca istemci sınıfı referans ediliyor.
+        if "httpx" not in sys.modules:
+            try:
+                import httpx  # noqa: F401
+            except Exception:
+                stub = types.ModuleType("httpx")
+                stub.AsyncClient = object
+                sys.modules["httpx"] = stub
+
+        stock_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "stock-mcp")
+        sys.path.insert(0, stock_dir)
+        try:
+            spec = importlib.util.spec_from_file_location(
+                "stock_services_under_test", os.path.join(stock_dir, "services.py"))
+            module = importlib.util.module_from_spec(spec)
+            sys.modules["stock_services_under_test"] = module
+            spec.loader.exec_module(module)
+            cls.service = module.ProductService
+        finally:
+            sys.path.remove(stock_dir)
+
+    def test_date_only_is_completed_to_midnight(self):
+        self.assertEqual(self.service._normalize_expected("2026-08-23"), "2026-08-23T00:00:00")
+
+    def test_full_datetime_is_passed_through(self):
+        value = "2026-08-23T10:27:15.1547863"
+        self.assertEqual(self.service._normalize_expected(value), value)
+
+    def test_empty_value_stays_empty(self):
+        self.assertIsNone(self.service._normalize_expected(None))
+        self.assertIsNone(self.service._normalize_expected(""))
 
 
 if __name__ == "__main__":

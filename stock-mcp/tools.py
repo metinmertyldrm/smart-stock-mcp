@@ -130,7 +130,9 @@ async def list_tools() -> list[Tool]:
                                 },
                                 "expected_delivery_date": {
                                     "type": "string",
-                                    "description": "Expected delivery date as YYYY-MM-DD (optional)."
+                                    "description": ("Expected delivery date, ISO-8601. "
+                                                    "Prefer the full value returned by place_order "
+                                                    "(e.g. 2026-08-23T10:27:15); a plain date also works.")
                                 }
                             },
                             "required": ["product_id", "quantity"],
