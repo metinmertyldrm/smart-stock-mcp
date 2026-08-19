@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import re
 import sqlite3
 import time
 import uuid
@@ -33,6 +34,39 @@ DB_PATH = os.getenv("LLM_CONVERSATIONS_DB", os.path.join(os.path.dirname(__file_
 HISTORY_MESSAGES = int(os.getenv("LLM_HISTORY_MESSAGES", "8"))
 HISTORY_CHARS = int(os.getenv("LLM_HISTORY_CHARS", "800"))
 logger = logging.getLogger(__name__)
+
+TITLE_STOP_WORDS = {
+    "acaba", "bir", "bu", "da", "de", "en", "icin", "için", "ile", "mi", "mı",
+    "mu", "mü", "ve", "veya", "lütfen", "lutfen", "bana", "olan", "olarak",
+}
+
+
+def conversation_title(message):
+    """Produce a compact, deterministic title when no title model is available."""
+    clean = re.sub(r"[\r\n\t]+", " ", message).strip(" .,:;!?-—")
+    lowered = clean.casefold()
+    budget = re.search(r"\b[\d.]+(?:,[\d]+)?\s*(?:TL|₺)\b", clean, re.IGNORECASE)
+    if budget:
+        return f"{budget.group(0)} Bütçeli Satın Alma"
+    patterns = (
+        (("bekleyen", "sipariş"), "Bekleyen Siparişleri Kontrol Etme"),
+        (("stokta olmayan",), "Eksik Stokları Tamamlama"),
+        (("eksik", "ürün"), "Eksik Stokları Tamamlama"),
+        (("stok", "plan"), "Stok Planlaması"),
+        (("taslak", "sipariş"), "Taslak Sipariş Oluşturma"),
+        (("teklif",), "Tedarik Tekliflerini Karşılaştırma"),
+    )
+    for terms, title in patterns:
+        if all(term in lowered for term in terms):
+            # Preserve a product/model identifier when one is present.
+            model = next((word for word in clean.split() if any(char.isdigit() for char in word)), None)
+            if model and title == "Stok Planlaması":
+                return f"{model[:24]} Stok Planlaması"
+            return title
+    words = [word for word in re.findall(r"[\wÇĞİÖŞÜçğıöşü.-]+", clean, re.UNICODE)
+             if word.casefold() not in TITLE_STOP_WORDS]
+    selected = words[:6]
+    return " ".join(selected).title()[:100] or "Yeni sohbet"
 
 
 def now():
@@ -73,12 +107,15 @@ class ConversationStore:
         return self.get(conversation_id, owner_id, include_messages=False)
 
     def ensure(self, conversation_id, owner_id, first_message):
-        row = self.db.execute("SELECT owner_id FROM conversations WHERE id=?", (conversation_id,)).fetchone()
+        row = self.db.execute("SELECT owner_id,title FROM conversations WHERE id=?", (conversation_id,)).fetchone()
         if row and row["owner_id"] != owner_id:
             raise HTTPException(404, "Sohbet bulunamadı.")
         if not row:
-            title = first_message.strip()[:60] + ("…" if len(first_message.strip()) > 60 else "")
-            self.create(owner_id, title or "Yeni sohbet", conversation_id)
+            self.create(owner_id, conversation_title(first_message), conversation_id)
+        elif row["title"] == "Yeni sohbet" and first_message.strip():
+            self.db.execute("UPDATE conversations SET title=?,updated_at=? WHERE id=?",
+                            (conversation_title(first_message), now(), conversation_id))
+            self.db.commit()
 
     def list(self, owner_id, limit=50, offset=0):
         rows = self.db.execute("SELECT * FROM conversations WHERE owner_id=? ORDER BY updated_at DESC LIMIT ? OFFSET ?", (owner_id, limit, offset)).fetchall()
