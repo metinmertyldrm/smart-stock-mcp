@@ -59,16 +59,8 @@ class MCPClient:
             tools_response = await session.list_tools()
 
             for tool in tools_response.tools:
-                if tool.name in self.tool_to_server:
-                    previous_server = self.tool_to_server[tool.name]
-
-                    raise ValueError(
-                        f"'{tool.name}' isimli tool hem "
-                        f"'{previous_server}' hem de "
-                        f"'{server_name}' server'ında mevcut."
-                    )
-
-                self.tool_to_server[tool.name] = server_name
+                if not self._register_tool(tool.name, server_name):
+                    continue
 
                 print(
                     f"  Tool bulundu: {tool.name} "
@@ -82,16 +74,37 @@ class MCPClient:
             f"{len(self.tool_to_server)} tool bağlandı."
         )
 
+    def _register_tool(self, tool_name: str, server_name: str) -> bool:
+        """Register a tool, returning False for a duplicate from one server."""
+        previous_server = self.tool_to_server.get(tool_name)
+        if previous_server == server_name:
+            # Some MCP SDK/server version combinations can return the same
+            # tool more than once while collecting paginated responses.
+            return False
+        if previous_server is not None:
+            raise ValueError(
+                f"'{tool_name}' isimli tool hem "
+                f"'{previous_server}' hem de "
+                f"'{server_name}' server'ında mevcut."
+            )
+        self.tool_to_server[tool_name] = server_name
+        return True
+
     async def list_tools(self):
         """
         Bütün server'lardaki tool'ları tek listede döndürür.
         """
 
         all_tools = []
+        seen_tool_names = set()
 
         for session in self.sessions.values():
             tools_response = await session.list_tools()
-            all_tools.extend(tools_response.tools)
+            for tool in tools_response.tools:
+                if tool.name in seen_tool_names:
+                    continue
+                seen_tool_names.add(tool.name)
+                all_tools.append(tool)
 
         return all_tools
 
