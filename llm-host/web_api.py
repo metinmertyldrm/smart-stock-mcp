@@ -221,7 +221,19 @@ class AgentApplication:
             answer = format_purchase_draft(final) if last_tool == "create_purchase_draft" else format_procurement_plan(final) if last_tool == "create_procurement_plan" else format_final_answer(final)
         if not execution.get("success"):
             answer = "İşlem tamamlanamadı. Lütfen isteğinizi kontrol edip yeniden deneyin."
-        draft_id = next((r.get("draftId") or r.get("draft_id") for r in execution.get("results", {}).values() if isinstance(r, dict) and (r.get("draftId") or r.get("draft_id"))), None)
+        # Taslak kimligini yalnizca create_purchase_draft adiminin sonucundan al.
+        # Tool MarketplacePurchaseDraftResponse dondurur ve anahtar "id"dir; ama
+        # herhangi bir adimdaki "id" alanini kabul etmek tehlikeli olur (place_order
+        # da "id" donduruyor, o siparis kimligi).
+        draft_id = None
+        for index, step in enumerate(plan.get("steps", [])):
+            if step.get("tool") != "create_purchase_draft":
+                continue
+            result = results.get(step.get("id") or f"step_{index + 1}")
+            if isinstance(result, dict):
+                candidate = result.get("draftId") or result.get("draft_id") or result.get("id")
+                if candidate:
+                    draft_id = candidate
         if draft_id:
             state.pending_draft_id = int(draft_id)
         if execution.get("success") and last_tool == "place_order":

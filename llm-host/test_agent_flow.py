@@ -113,6 +113,39 @@ class TraceStatusTest(unittest.TestCase):
         self.assertIn("çalıştırılmadı", response["trace"][1]["resultSummary"])
 
 
+class PendingDraftTest(unittest.TestCase):
+    """Regresyon: create_purchase_draft sonucu 'id' döndürüyor ama web tarafı
+    yalnızca 'draftId' arıyordu; taslak→onay→sipariş zinciri hiç kurulamıyordu."""
+
+    DRAFT_PLAN = json.dumps({"type": "execution_plan", "goal": "DRAFT", "steps": [
+        {"id": "step_1", "tool": "create_purchase_draft",
+         "arguments": {"items": [{"offer_id": 1, "quantity": 5}]}}]})
+
+    def test_draft_id_is_remembered_for_confirmation(self):
+        client = FakeMCPClient({"create_purchase_draft": {
+            "success": True, "id": 77, "totalCost": 1000.0, "status": "PENDING", "items": []}})
+        agent = web_api.AgentApplication(client, ScriptedLLM(self.DRAFT_PLAN), temp_store(self))
+
+        response = run(agent.chat("c1", "taslak sipariş oluştur"))
+
+        self.assertEqual(response["pendingDraftId"], 77)
+
+    def test_order_id_is_not_mistaken_for_a_draft_id(self):
+        """place_order da 'id' döndürür; o sipariş kimliğidir, taslak değil."""
+        plan = json.dumps({"type": "execution_plan", "goal": "ORDER", "steps": [
+            {"id": "step_1", "tool": "place_order", "arguments": {"draft_id": 5}}]})
+        client = FakeMCPClient({"place_order": {"success": True, "id": 999, "draftId": 5, "items": []}})
+        agent = web_api.AgentApplication(client, ScriptedLLM(plan), temp_store(self))
+        state = web_api.ConversationState()
+        state.pending_draft_id = 5
+        agent.states["c1"] = state
+
+        response = run(agent.chat("c1", "onaylıyorum"))
+
+        # Siparis verildi -> bekleyen taslak kalmamali, 999 asla taslak sanilmamali.
+        self.assertIsNone(response["pendingDraftId"])
+
+
 class PermissionTest(unittest.TestCase):
     def test_order_is_blocked_without_pending_draft(self):
         order_plan = json.dumps({"type": "execution_plan", "goal": "ORDER", "steps": [
