@@ -160,6 +160,14 @@ async def list_tools() -> list[Tool]:
                         "type": "boolean",
                         "default": True,
                         "description": "True: only PENDING orders. False: all orders."
+                    },
+                    "ready_only": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "When true, return only PENDING orders whose expected delivery "
+                            "date has arrived (legacy rows without a date are included)."
+                        )
                     }
                 },
                 "additionalProperties": False,
@@ -177,6 +185,25 @@ async def list_tools() -> list[Tool]:
                     }
                 },
                 "required": ["order_id"],
+                "additionalProperties": False,
+            }
+        ),
+        Tool(
+            name="receive_orders",
+            description=(
+                "Receive previously confirmed incoming orders. Each order is validated "
+                "independently; the result reports both received and failed IDs."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "order_ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "minItems": 1,
+                    }
+                },
+                "required": ["order_ids"],
                 "additionalProperties": False,
             }
         ),
@@ -315,7 +342,8 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[TextConten
             pending_only = arguments.get("pending_only")
             if pending_only is None:
                 pending_only = True
-            orders = await service.list_incoming_orders(bool(pending_only))
+            ready_only = bool(arguments.get("ready_only", False))
+            orders = await service.list_incoming_orders(bool(pending_only), ready_only)
             result = {
                 "success": True,
                 "count": len(orders),
@@ -376,6 +404,17 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[TextConten
                     text=json.dumps(result, ensure_ascii=False)
                 )
             ]
+
+        elif name == "receive_orders":
+            order_ids = arguments.get("order_ids") or []
+            received, failed = await service.receive_orders(order_ids)
+            result = {
+                "success": True,
+                "count": len(received),
+                "orders": [o.model_dump() for o in received],
+                "failed": failed,
+            }
+            return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
 
         else:
             return [

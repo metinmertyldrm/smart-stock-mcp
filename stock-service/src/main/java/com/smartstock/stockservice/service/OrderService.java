@@ -9,6 +9,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
@@ -20,6 +21,7 @@ public class OrderService {
 
     private final IncomingOrderRepository incomingOrderRepository;
     private final ProductRepository productRepository;
+    private final Clock clock;
 
     public List<IncomingOrder> getAllOrders() {
         return incomingOrderRepository.findAll();
@@ -27,6 +29,13 @@ public class OrderService {
 
     public List<IncomingOrder> getPendingOrders() {
         return incomingOrderRepository.findByStatus(IncomingOrderStatus.PENDING);
+    }
+
+    public List<IncomingOrder> getReceivableOrders() {
+        LocalDateTime now = LocalDateTime.now(clock);
+        return getPendingOrders().stream()
+                .filter(order -> isReceivable(order, now))
+                .toList();
     }
 
     public Optional<IncomingOrder> getOrderById(Long id) {
@@ -49,8 +58,8 @@ public class OrderService {
                 .product(product)
                 .quantity(quantity)
                 .status(IncomingOrderStatus.PENDING)
-                .expectedDeliveryDate(expectedDeliveryDate != null ? expectedDeliveryDate : LocalDateTime.now().plusDays(3))
-                .createdAt(LocalDateTime.now())
+                .expectedDeliveryDate(expectedDeliveryDate != null ? expectedDeliveryDate : LocalDateTime.now(clock).plusDays(3))
+                .createdAt(LocalDateTime.now(clock))
                 .build();
 
         return incomingOrderRepository.save(order);
@@ -68,6 +77,11 @@ public class OrderService {
             throw new IllegalStateException("Order has already been received");
         }
 
+        LocalDateTime now = LocalDateTime.now(clock);
+        if (!isReceivable(order, now)) {
+            throw new DeliveryNotReadyException(orderId, order.getExpectedDeliveryDate());
+        }
+
         // Update product stock
         Product product = order.getProduct();
         product.setStockQuantity(product.getStockQuantity() + order.getQuantity());
@@ -76,5 +90,11 @@ public class OrderService {
         // Update order status
         order.setStatus(IncomingOrderStatus.RECEIVED);
         return incomingOrderRepository.save(order);
+    }
+
+    private boolean isReceivable(IncomingOrder order, LocalDateTime now) {
+        // Legacy rows may not have an expected date; preserving their receivability
+        // avoids permanently stranding otherwise valid pending stock movements.
+        return order.getExpectedDeliveryDate() == null || !order.getExpectedDeliveryDate().isAfter(now);
     }
 }

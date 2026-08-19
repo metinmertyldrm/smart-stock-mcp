@@ -2,6 +2,7 @@ package com.smartstock.stockservice.controller;
 
 import com.smartstock.stockservice.dto.CreateOrderRequestDto;
 import com.smartstock.stockservice.model.IncomingOrder;
+import com.smartstock.stockservice.service.DeliveryNotReadyException;
 import com.smartstock.stockservice.service.OrderService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -22,8 +23,11 @@ public class OrderController {
     }
 
     @GetMapping("/pending")
-    public ResponseEntity<List<IncomingOrder>> getPendingOrders() {
-        return ResponseEntity.ok(orderService.getPendingOrders());
+    public ResponseEntity<List<IncomingOrder>> getPendingOrders(
+            @RequestParam(defaultValue = "false") boolean readyOnly) {
+        return ResponseEntity.ok(readyOnly
+                ? orderService.getReceivableOrders()
+                : orderService.getPendingOrders());
     }
 
     @GetMapping("/{id}")
@@ -44,14 +48,19 @@ public class OrderController {
     }
 
     @PostMapping("/{id}/receive")
-    public ResponseEntity<IncomingOrder> receiveOrder(@PathVariable Long id) {
+    public ResponseEntity<?> receiveOrder(@PathVariable Long id) {
         try {
             IncomingOrder order = orderService.receiveOrder(id);
             return ResponseEntity.ok(order);
         } catch (IllegalArgumentException e) {
             return ResponseEntity.notFound().build();
+        } catch (DeliveryNotReadyException e) {
+            return ResponseEntity.status(409).body(new OrderErrorResponse(
+                    e.getMessage(), e.getExpectedDeliveryDate()));
         } catch (IllegalStateException e) {
-            return ResponseEntity.badRequest().body(null);
+            return ResponseEntity.badRequest().body(new OrderErrorResponse(e.getMessage(), null));
         }
     }
+
+    public record OrderErrorResponse(String detail, java.time.LocalDateTime expectedDeliveryDate) {}
 }

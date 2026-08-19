@@ -223,7 +223,7 @@ EXAMPLES:
 13. "Bekleyen siparişleri kontrol et" -> goal: INFO, steps:
     - step_1: list_incoming_orders(arguments: pending_only=true)
 14. "Bekleyen siparişleri kontrol et ve teslim edilen ürünleri stoğa ekle" -> goal: RECEIVE, steps:
-    - step_1: list_incoming_orders(arguments: pending_only=true)
+    - step_1: list_incoming_orders(arguments: pending_only=true, ready_only=true)
     (Bu adimda DURULUR. Host listeyi gosterip kullanicidan onay ister.)
 15. "Evet, stoğa al" / "onaylıyorum" (when PENDING_RECEIVE_IDS exists) -> goal: RECEIVE, steps:
     - step_1: receive_orders(arguments: order_ids={{"$from_context": "pending_receive_ids"}})
@@ -282,7 +282,7 @@ RULES:
 21. RECEIVE GOAL RULE (two steps, like the purchase flow):
     Receiving changes warehouse stock, so it ALWAYS needs explicit user confirmation.
     - First request ("teslim edilenleri stoğa ekle"): goal="RECEIVE" with ONLY
-      list_incoming_orders. Do NOT call receive_orders yet; the host shows the list
+      list_incoming_orders(arguments: pending_only=true, ready_only=true). Do NOT call receive_orders yet; the host shows the list
       and asks the user to confirm.
     - After the user confirms AND PENDING_RECEIVE_IDS is present: goal="RECEIVE" with
       receive_orders(order_ids={{"$from_context": "pending_receive_ids"}}).

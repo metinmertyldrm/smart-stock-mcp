@@ -1104,6 +1104,12 @@ async def execute_plan(plan: dict, client: MCPClient, available_tool_names: set[
                 arguments.pop("category", None)
                 arguments.pop("category_name", None)
 
+            # RECEIVE teklif asamasinda yalnizca tarihi gelmis kayitlar onaya
+            # sunulur. INFO listelemeleri ise tum bekleyen siparisleri korur.
+            if tool_name == "list_incoming_orders" and plan.get("goal", "").upper() == "RECEIVE":
+                arguments["pending_only"] = True
+                arguments["ready_only"] = True
+
             # Date validation
             expected_date_str = arguments.get("expected_delivery_date") or arguments.get("expectedDeliveryDate")
             if expected_date_str:
@@ -1606,7 +1612,7 @@ def format_receive_proposal(listing: dict) -> str:
     """Bekleyen siparisleri gosterip onay ister (stok degistirmeden once)."""
     orders = (listing or {}).get("orders") or []
     if not orders:
-        return "Teslim alınmayı bekleyen sipariş yok."
+        return "Şu anda stoğa alınabilecek teslimat yok."
 
     lines = ["Teslim alınmayı bekleyen siparişler:", ""]
     for entry in orders:
@@ -1626,7 +1632,8 @@ def format_receive_proposal(listing: dict) -> str:
 def format_received_orders(result: dict) -> str:
     """Teslim alma sonucunu ozetler."""
     orders = (result or {}).get("orders") or []
-    if not orders:
+    failed = (result or {}).get("failed") or []
+    if not orders and not failed:
         return "Teslim alınan sipariş yok."
 
     lines = [f"{len(orders)} sipariş teslim alındı ve stoğa eklendi.", ""]
@@ -1636,6 +1643,12 @@ def format_received_orders(result: dict) -> str:
         product = entry.get("product")
         name = product.get("name") if isinstance(product, dict) else "Bilinmeyen Ürün"
         lines.append(f"- {name}: +{entry.get('quantity')} adet")
+    if failed:
+        lines.extend(["", f"{len(failed)} sipariş teslim alınamadı:"])
+        for entry in failed:
+            if not isinstance(entry, dict):
+                continue
+            lines.append(f"- #{entry.get('order_id')}: {entry.get('error') or 'Teslimat hazır değil.'}")
     return "\n".join(lines)
 
 
@@ -2068,4 +2081,3 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\nKapatılıyor...")
-
