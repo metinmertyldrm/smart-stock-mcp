@@ -248,7 +248,7 @@ class AgentApplication:
                              if step.get("tool") == "create_incoming_orders"), None)
             answer = format_order_confirmation(results.get(ordered_step_id) or {}, incoming)
         else:
-            answer = format_purchase_draft(final) if last_tool == "create_purchase_draft" else format_procurement_plan(final) if last_tool == "create_procurement_plan" else format_final_answer(final)
+            answer = format_purchase_draft(final) if last_tool == "create_purchase_draft" else format_procurement_plan(final) if last_tool == "create_procurement_plan" else format_final_answer(final, last_tool)
         if not execution.get("success"):
             answer = "İşlem tamamlanamadı. Lütfen isteğinizi kontrol edip yeniden deneyin."
         # Taslak kimligini yalnizca create_purchase_draft adiminin sonucundan al.

@@ -1195,7 +1195,17 @@ async def execute_plan(plan: dict, client: MCPClient, available_tool_names: set[
 
 
 
-def format_final_answer(answer) -> str:
+# Bos liste her zaman kotu haber degil: kritik urun kalmamasi iyi haberdir.
+EMPTY_PRODUCT_MESSAGES = {
+    "list_low_stock": "Kritik seviyede ürün yok — tüm stoklar minimum seviyenin üzerinde.",
+    "list_out_of_stock": "Stokta tükenmiş ürün yok.",
+    "calculate_replenishment": "Şu an sipariş edilmesi gereken ürün yok.",
+    "get_stock_replenishment_needed": "Şu an sipariş edilmesi gereken ürün yok.",
+    "search_products": "Aramanızla eşleşen ürün bulunamadı.",
+}
+
+
+def format_final_answer(answer, source_tool: str | None = None) -> str:
     if isinstance(answer, dict):
         lines = []
         summary = answer.get("summary") or answer.get("özet")
@@ -1270,7 +1280,7 @@ def format_final_answer(answer) -> str:
         products = answer.get("products")
         if isinstance(products, list):
             if not products:
-                lines.append("Ürün bulunamadı.")
+                lines.append(EMPTY_PRODUCT_MESSAGES.get(source_tool, "Ürün bulunamadı."))
             else:
                 lines.append("Ürünler:")
                 for idx, prod in enumerate(products, 1):

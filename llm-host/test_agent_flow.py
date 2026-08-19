@@ -333,3 +333,29 @@ class HistoryBoundTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EmptyResultWordingTest(unittest.TestCase):
+    """Boş liste her zaman kötü haber değil; kritik ürün kalmaması iyi haberdir."""
+
+    LOW_STOCK_PLAN = json.dumps({"type": "execution_plan", "goal": "INFO", "steps": [
+        {"id": "step_1", "tool": "list_low_stock", "arguments": {}}]})
+
+    def test_no_critical_products_reads_as_good_news(self):
+        client = FakeMCPClient({"list_low_stock": {"success": True, "count": 0, "products": []}})
+        agent = web_api.AgentApplication(client, ScriptedLLM(self.LOW_STOCK_PLAN), temp_store(self))
+
+        response = run(agent.chat("c1", "stokta azalan ürünleri göster"))
+
+        self.assertIn("Kritik seviyede ürün yok", response["finalAnswer"])
+        self.assertNotIn("bulunamadı", response["finalAnswer"])
+
+    def test_search_with_no_match_still_says_not_found(self):
+        plan = json.dumps({"type": "execution_plan", "goal": "INFO", "steps": [
+            {"id": "step_1", "tool": "search_products", "arguments": {"query": "xyz"}}]})
+        client = FakeMCPClient({"search_products": {"success": True, "products": []}})
+        agent = web_api.AgentApplication(client, ScriptedLLM(plan), temp_store(self))
+
+        response = run(agent.chat("c1", "xyz ara"))
+
+        self.assertIn("eşleşen ürün bulunamadı", response["finalAnswer"])
