@@ -197,7 +197,7 @@ class ReceiveConfirmationTest(unittest.TestCase):
     Teslim alma da satın alma gibi iki aşamalı."""
 
     LISTING = json.dumps({"type": "execution_plan", "goal": "RECEIVE", "steps": [
-        {"id": "step_1", "tool": "list_incoming_orders", "arguments": {"pending_only": True}}]})
+        {"id": "step_1", "tool": "list_incoming_orders", "arguments": {"pending_only": True, "ready_only": True}}]})
     RECEIVING = json.dumps({"type": "execution_plan", "goal": "RECEIVE", "steps": [
         {"id": "step_1", "tool": "receive_orders",
          "arguments": {"order_ids": {"$from_context": "pending_receive_ids"}}}]})
@@ -223,9 +223,46 @@ class ReceiveConfirmationTest(unittest.TestCase):
         response = run(agent.chat("c1", "teslim edilen ürünleri stoğa ekle"))
 
         self.assertEqual(client.called_tools, ["list_incoming_orders"])
+        self.assertEqual(client.calls[0][1], {"pending_only": True, "ready_only": True})
         self.assertNotIn("receive_orders", client.called_tools)
         self.assertIn("onaylıyor musunuz", response["finalAnswer"])
         self.assertEqual(response["pendingReceiveIds"], [2, 3])
+
+    def test_receive_listing_forces_ready_filter_even_if_model_omits_it(self):
+        unsafe_plan = json.dumps({"type": "execution_plan", "goal": "RECEIVE", "steps": [
+            {"id": "step_1", "tool": "list_incoming_orders", "arguments": {}}]})
+        client = self.client()
+        agent = web_api.AgentApplication(client, ScriptedLLM(unsafe_plan), temp_store(self))
+
+        run(agent.chat("c1", "teslim edilenleri stoğa ekle"))
+
+        self.assertEqual(client.calls[0][1], {"pending_only": True, "ready_only": True})
+
+    def test_empty_receivable_list_does_not_offer_confirmation(self):
+        client = FakeMCPClient({"list_incoming_orders": {"success": True, "count": 0, "orders": []}})
+        agent = web_api.AgentApplication(client, ScriptedLLM(self.LISTING), temp_store(self))
+
+        response = run(agent.chat("c1", "teslim edilenleri stoğa ekle"))
+
+        self.assertEqual(response["pendingReceiveIds"], [])
+        self.assertEqual(response["finalAnswer"], "Şu anda stoğa alınabilecek teslimat yok.")
+
+    def test_partial_batch_failure_is_explained(self):
+        client = FakeMCPClient({"receive_orders": {
+            "success": True, "count": 1,
+            "orders": [{"id": 2, "product": {"name": "Telefon"}, "quantity": 3}],
+            "failed": [{"order_id": 3, "error": "Beklenen teslim tarihi: 2026-08-23"}],
+        }})
+        agent = web_api.AgentApplication(client, ScriptedLLM(self.RECEIVING), temp_store(self))
+        state = web_api.ConversationState()
+        state.pending_receive_ids = [2, 3]
+        agent.states["c1"] = state
+
+        response = run(agent.chat("c1", "onaylıyorum"))
+
+        self.assertIn("1 sipariş teslim alındı", response["finalAnswer"])
+        self.assertIn("#3", response["finalAnswer"])
+        self.assertIn("2026-08-23", response["finalAnswer"])
 
     def test_receiving_without_confirmation_is_blocked(self):
         client = self.client()

@@ -63,11 +63,12 @@ class ProductService:
             response.raise_for_status()
             return IncomingOrder(**response.json())
 
-    async def list_incoming_orders(self, pending_only: bool = True) -> List[IncomingOrder]:
+    async def list_incoming_orders(self, pending_only: bool = True, ready_only: bool = False) -> List[IncomingOrder]:
         """Depoya beklenen siparisleri listeler (varsayilan: yalnizca PENDING)."""
         path = "/api/orders/pending" if pending_only else "/api/orders"
+        params = {"readyOnly": "true"} if pending_only and ready_only else None
         async with httpx.AsyncClient() as client:
-            response = await client.get(f"{self.base_url}{path}")
+            response = await client.get(f"{self.base_url}{path}", params=params)
             response.raise_for_status()
             return [IncomingOrder(**item) for item in response.json()]
 
@@ -104,3 +105,24 @@ class ProductService:
             response = await client.post(f"{self.base_url}/api/orders/{order_id}/receive")
             response.raise_for_status()
             return IncomingOrder(**response.json())
+
+    async def receive_orders(self, order_ids: List[int]) -> tuple[List[IncomingOrder], List[dict]]:
+        """Receive independently so one unavailable delivery does not hide the others."""
+        received: List[IncomingOrder] = []
+        failed: List[dict] = []
+        for order_id in order_ids:
+            try:
+                received.append(await self.receive_order(order_id))
+            except httpx.HTTPStatusError as exc:
+                try:
+                    detail = exc.response.json().get("detail")
+                except (ValueError, AttributeError):
+                    detail = None
+                failed.append({
+                    "order_id": order_id,
+                    "status": exc.response.status_code,
+                    "error": detail or "Teslimat stoğa alınamadı.",
+                })
+            except Exception as exc:
+                failed.append({"order_id": order_id, "error": str(exc)})
+        return received, failed
