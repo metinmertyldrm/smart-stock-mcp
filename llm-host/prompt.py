@@ -166,6 +166,8 @@ def get_execution_plan_prompt(tools_list: list, last_successful_plan: dict | Non
                 context_info += f"\nLAST_REFERENCE: id={ref_id}, type={ref_data['type']}, source={ref_data['source_tool']}, count={ref_data['count']}\n"
         if state.pending_draft_id:
             context_info += f"\nPENDING_DRAFT_ID: {state.pending_draft_id}\n"
+        if getattr(state, "pending_receive_ids", None):
+            context_info += f"\nPENDING_RECEIVE_IDS: {state.pending_receive_ids}\n"
 
     return f"""Smart Stock & Procurement AI Executor.
 
@@ -222,7 +224,9 @@ EXAMPLES:
     - step_1: list_incoming_orders(arguments: pending_only=true)
 14. "Bekleyen siparişleri kontrol et ve teslim edilen ürünleri stoğa ekle" -> goal: RECEIVE, steps:
     - step_1: list_incoming_orders(arguments: pending_only=true)
-    - step_2: receive_order(arguments: order_id={{"$from": "step_1.orders.0.id"}})
+    (Bu adimda DURULUR. Host listeyi gosterip kullanicidan onay ister.)
+15. "Evet, stoğa al" / "onaylıyorum" (when PENDING_RECEIVE_IDS exists) -> goal: RECEIVE, steps:
+    - step_1: receive_orders(arguments: order_ids={{"$from_context": "pending_receive_ids"}})
 
 DYNAMIC REFERENCING: {{"$from": "step_id.path", "$transform": "replenishments_to_items"|"plan_to_draft_items"|"out_of_stock_products_to_items"|"low_stock_products_to_items"|"order_to_incoming_items"}} or {{"$from_context": "last_reference.id"}} or {{"$from_context": "pending_draft_id"}}
 
@@ -275,13 +279,15 @@ RULES:
     NEVER generate or include the "final_response" field in your JSON output. The host system will construct the final response from execution results.
 20. LANGUAGE RULE:
     The "answer" and "final_response" fields (including in the assistant history) MUST always be in Turkish. Never generate or output Chinese, English, or any other language for these fields.
-21. RECEIVE GOAL RULE:
-    Use goal="RECEIVE" when the user wants awaited/pending deliveries taken into stock
-    ("teslim edilenleri stoğa ekle", "gelen siparişleri teslim al"). List them first with
-    list_incoming_orders, then call receive_order with an order id from that list.
-    receive_order changes warehouse stock, so never call it unless the user asked for it.
-    To only VIEW awaited deliveries without taking them in, use goal="INFO" with
-    list_incoming_orders alone.
+21. RECEIVE GOAL RULE (two steps, like the purchase flow):
+    Receiving changes warehouse stock, so it ALWAYS needs explicit user confirmation.
+    - First request ("teslim edilenleri stoğa ekle"): goal="RECEIVE" with ONLY
+      list_incoming_orders. Do NOT call receive_orders yet; the host shows the list
+      and asks the user to confirm.
+    - After the user confirms AND PENDING_RECEIVE_IDS is present: goal="RECEIVE" with
+      receive_orders(order_ids={{"$from_context": "pending_receive_ids"}}).
+    - Never call receive_orders/receive_order when PENDING_RECEIVE_IDS is absent.
+    - To only VIEW awaited deliveries, use goal="INFO" with list_incoming_orders alone.
 22. ORDER GOAL STEPS RULE:
     For the "ORDER" goal, steps MUST NOT be empty. You must include a step calling the 'place_order' tool with the draft_id argument resolved from pending_draft_id,
     followed by a create_incoming_orders step that consumes the place_order result via the order_to_incoming_items transform.
@@ -291,7 +297,7 @@ CONTEXT VS TOOL:
 - Never use "$from_context" for data produced by an earlier step in the current plan execution. For that, use "$from" referencing the step ID.
 - "$from" accepts ONLY a step ID of the current plan (step_1, step_2, ...). NEVER put a context name inside "$from".
   Wrong: {{"$from": "last_reference.id"}}   Correct: {{"$from_context": "last_reference.id"}}
-- Valid "$from_context" names: last_plan, last_cheapest_plan, last_fastest_plan, last_product, last_replenishment, last_reference, pending_draft_id.
+- Valid "$from_context" names: last_plan, last_cheapest_plan, last_fastest_plan, last_product, last_replenishment, last_reference, pending_draft_id, pending_receive_ids.
 - Only list a name in "context_sources" if it is actually shown above (LAST_REFERENCE, PENDING_DRAFT_ID, LAST_CHEAPEST_PLAN, LAST_FASTEST_PLAN).
   If it is not shown, that data does not exist yet: produce it with tool steps instead of declaring context_sources.
 

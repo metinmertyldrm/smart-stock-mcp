@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from app import (MARKETPLACE_SERVER_PATH, STOCK_SERVER_PATH, CachedProcurementPlan,
                  ConversationState, clean_tool_results_for_reasoning, execute_plan,
                  format_final_answer, format_order_confirmation, format_procurement_plan,
-                 format_purchase_draft,
+                 format_purchase_draft, format_receive_proposal, format_received_orders,
                  build_repair_instruction, get_execution_plan_prompt, is_plan_valid,
                  parse_execution_plan,
                  resolve_step_arguments, validate_plan_against_state)
@@ -24,8 +24,9 @@ from mcp_client import MCPClient
 from prompt import get_reasoning_prompt
 
 WRITE_TOOLS = {"create_purchase_draft", "place_order", "create_incoming_order",
-               "create_incoming_orders", "receive_order"}
-WRITE_INTENT_WORDS = ("sipariş", "taslak", "satın al", "oluştur", "place", "draft", "order")
+               "create_incoming_orders", "receive_order", "receive_orders"}
+WRITE_INTENT_WORDS = ("sipariş", "taslak", "satın al", "oluştur", "place", "draft", "order",
+                      "stoğa al", "stoga al", "teslim al", "receive")
 CONFIRM_INTENT_WORDS = ("evet", "onay", "onayla", "onaylıyorum", "devam", "tamam", "yes", "confirm")
 DB_PATH = os.getenv("LLM_CONVERSATIONS_DB", os.path.join(os.path.dirname(__file__), "conversations.db"))
 # Gecmis promptun icine giriyor; num_ctx tasmasin diye hem adet hem uzunluk sinirli.
@@ -153,7 +154,8 @@ class AgentApplication:
         state.last_user_message = message
         normalized = message.casefold()
         write_intent = any(word in normalized for word in WRITE_INTENT_WORDS)
-        confirm_intent = state.pending_draft_id is not None and any(word in normalized for word in CONFIRM_INTENT_WORDS)
+        awaiting_confirmation = state.pending_draft_id is not None or bool(state.pending_receive_ids)
+        confirm_intent = awaiting_confirmation and any(word in normalized for word in CONFIRM_INTENT_WORDS)
         permission = "FULL" if write_intent or confirm_intent else "PLAN"
         tools = await self.client.list_tools()
         names = {t.name for t in tools}
@@ -215,10 +217,18 @@ class AgentApplication:
         # Zincir create_incoming_orders ile bitebildigi icin "son adim place_order mi"
         # kontrolu yetmiyor; siparis adimini adiyla ariyoruz.
         ordered_step_id = None
+        listing_step_id = None
+        received_step_id = None
         if execution.get("success"):
             for index, step in enumerate(plan.get("steps", [])):
-                if step.get("tool") == "place_order":
-                    ordered_step_id = step.get("id") or f"step_{index + 1}"
+                step_id = step.get("id") or f"step_{index + 1}"
+                tool = step.get("tool")
+                if tool == "place_order":
+                    ordered_step_id = step_id
+                elif tool == "list_incoming_orders":
+                    listing_step_id = step_id
+                elif tool in ("receive_orders", "receive_order"):
+                    received_step_id = step_id
 
         goal = plan.get("goal", "").upper()
         if execution.get("success") and goal == "REASON":
@@ -226,6 +236,11 @@ class AgentApplication:
             answer = self.llm.generate([{"role": "system", "content": get_reasoning_prompt(message, reasoning_data)}]).strip()
         elif goal == "CHAT":
             answer = final.get("chat_answer", "")
+        elif received_step_id is not None:
+            answer = format_received_orders(results.get(received_step_id) or {})
+        elif goal == "RECEIVE" and listing_step_id is not None:
+            # Oneri asamasi: stok degistirmeden once onay iste.
+            answer = format_receive_proposal(results.get(listing_step_id) or {})
         elif ordered_step_id is not None:
             # ORDER zinciri: ozet place_order + create_incoming_orders sonuclarindan kurulur.
             incoming = next((results.get(step.get("id") or f"step_{index + 1}")
@@ -254,9 +269,19 @@ class AgentApplication:
         if ordered_step_id is not None:
             # Siparis verildi: taslak artik bekleyen degil, onay dugmesi kaybolmali.
             state.pending_draft_id = None
+
+        if goal == "RECEIVE" and listing_step_id is not None and received_step_id is None:
+            listing = results.get(listing_step_id) or {}
+            state.pending_receive_ids = [
+                entry.get("id") for entry in (listing.get("orders") or [])
+                if isinstance(entry, dict) and entry.get("id")
+            ]
+        elif received_step_id is not None:
+            state.pending_receive_ids = []
         response = {"conversationId": conversation_id, "permissionLevel": permission, "plan": plan,
                     "trace": trace, "finalAnswer": answer, "pendingDraftId": state.pending_draft_id,
-                    "succeeded": bool(execution.get("success"))}
+                    "succeeded": bool(execution.get("success")),
+                    "pendingReceiveIds": list(state.pending_receive_ids)}
         self.store.add_message(conversation_id, "assistant", answer, "success" if execution.get("success") else "failed", response)
         return response
 
@@ -351,9 +376,22 @@ class AgentApplication:
         if not draft:
             # Sunucu yeniden baslatilinca bellekteki durum kaybolur; kalici kayda bak.
             draft = self.store.pending_draft(conversation_id)
-        if not draft:
-            raise HTTPException(409, "Onay bekleyen taslak bulunamadı.")
-        return await self.chat(conversation_id, f"{draft} numaralı taslağı onayla ve siparişi oluştur", owner_id)
+        if draft:
+            return await self.chat(
+                conversation_id,
+                f"{draft} numaralı taslağı onayla ve siparişi oluştur",
+                owner_id,
+            )
+
+        # Taslak yoksa bekleyen teslim alma olabilir; o da onay gerektiriyor.
+        if state and state.pending_receive_ids:
+            return await self.chat(
+                conversation_id,
+                "Bekleyen teslimatları onaylıyorum, stoğa al",
+                owner_id,
+            )
+
+        raise HTTPException(409, "Onay bekleyen işlem bulunamadı.")
 
 
 def owner(x_client_id):

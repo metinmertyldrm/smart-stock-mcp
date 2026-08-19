@@ -135,6 +135,7 @@ def parse_execution_plan(text: str) -> dict:
         "create_incoming_order",
         "create_incoming_orders",
         "receive_order",
+        "receive_orders",
     }
     INFO_TOOLS = {
         "list_out_of_stock",
@@ -178,13 +179,13 @@ def parse_execution_plan(text: str) -> dict:
 
     elif goal == "RECEIVE":
         # Teslim alma hem okuma hem yazma icerir; INFO salt okunur oldugu icin
-        # bu akisin kendi hedefi var.
+        # bu akisin kendi hedefi var. Iki bicimi olabilir:
+        #   1) oneri  : yalnizca listeleme -> host kullaniciya onay sorar
+        #   2) uygulama: onaydan sonra receive_orders
         if not steps:
             raise ValueError("RECEIVE planında en az bir adım bulunmalıdır.")
-        if not any(step["tool"] == "receive_order" for step in steps):
-            raise ValueError("RECEIVE planı 'receive_order' adımı içermelidir.")
         allowed = {"list_incoming_orders", "list_marketplace_orders", "get_order_status",
-                   "receive_order"}
+                   "receive_order", "receive_orders"}
         for step in steps:
             if step["tool"] not in allowed:
                 raise ValueError(
@@ -212,6 +213,19 @@ def validate_plan_against_state(plan: dict, state) -> None:
     wants_order = goal == "ORDER" or any(
         step.get("tool") == "place_order" for step in steps if isinstance(step, dict)
     )
+    wants_receive = any(
+        step.get("tool") in ("receive_order", "receive_orders")
+        for step in steps if isinstance(step, dict)
+    )
+    if wants_receive:
+        pending_receive = getattr(state, "pending_receive_ids", None) if state is not None else None
+        if not pending_receive:
+            raise ValueError(
+                "Onay bekleyen teslim alma yok, bu yuzden stok artirilamaz. "
+                "Once list_incoming_orders ile bekleyen siparisleri listele; "
+                "kullanici onayladiktan sonra receive_orders cagrilabilir."
+            )
+
     if wants_order:
         pending = getattr(state, "pending_draft_id", None) if state is not None else None
         if not pending:
@@ -453,6 +467,9 @@ class ConversationState:
     last_reference_id: str | None = None
     last_user_message: str | None = None
     pending_draft_id: int | None = None
+    # Stok degistiren teslim alma da onay bekler (taslak: "stok degistirme
+    # islemlerinden once kullanici onayi alacaktir").
+    pending_receive_ids: list[int] = field(default_factory=list)
     history: list[dict[str, str]] = field(default_factory=list)
 
 ALLOWED_CONTEXT_SOURCES = {
@@ -462,7 +479,8 @@ ALLOWED_CONTEXT_SOURCES = {
     "last_product",
     "last_replenishment",
     "last_reference",
-    "pending_draft_id"
+    "pending_draft_id",
+    "pending_receive_ids"
 }
 
 def is_plan_valid(plan) -> bool:
@@ -1574,6 +1592,43 @@ def format_purchase_draft(draft: dict) -> str:
 
 
 
+def format_receive_proposal(listing: dict) -> str:
+    """Bekleyen siparisleri gosterip onay ister (stok degistirmeden once)."""
+    orders = (listing or {}).get("orders") or []
+    if not orders:
+        return "Teslim alınmayı bekleyen sipariş yok."
+
+    lines = ["Teslim alınmayı bekleyen siparişler:", ""]
+    for entry in orders:
+        if not isinstance(entry, dict):
+            continue
+        product = entry.get("product")
+        name = product.get("name") if isinstance(product, dict) else "Bilinmeyen Ürün"
+        expected = (entry.get("expectedDeliveryDate") or "").split("T")[0]
+        suffix = f", beklenen teslim {expected}" if expected else ""
+        lines.append(f"- #{entry.get('id')} {name}: {entry.get('quantity')} adet{suffix}")
+
+    lines.append("")
+    lines.append("Bunları stoğa almamı onaylıyor musunuz?")
+    return "\n".join(lines)
+
+
+def format_received_orders(result: dict) -> str:
+    """Teslim alma sonucunu ozetler."""
+    orders = (result or {}).get("orders") or []
+    if not orders:
+        return "Teslim alınan sipariş yok."
+
+    lines = [f"{len(orders)} sipariş teslim alındı ve stoğa eklendi.", ""]
+    for entry in orders:
+        if not isinstance(entry, dict):
+            continue
+        product = entry.get("product")
+        name = product.get("name") if isinstance(product, dict) else "Bilinmeyen Ürün"
+        lines.append(f"- {name}: +{entry.get('quantity')} adet")
+    return "\n".join(lines)
+
+
 def format_order_confirmation(order: dict, incoming: dict | None = None) -> str:
     """place_order + create_incoming_orders zincirini tek cumlelik ozete cevirir.
 
@@ -1819,6 +1874,7 @@ async def main():
                     "create_incoming_order",
                     "create_incoming_orders",
                     "receive_order",
+                    "receive_orders",
                 }
                 has_unauthorized_write = False
                 for step in plan.get("steps", []):

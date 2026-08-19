@@ -108,9 +108,24 @@ class ReceiveGoalTest(unittest.TestCase):
         parsed = app.parse_execution_plan(plan_json(goal="RECEIVE", steps=self.STEPS))
         self.assertEqual(len(parsed["steps"]), 2)
 
-    def test_receive_goal_must_actually_receive(self):
-        with self.assertRaises(ValueError):
-            app.parse_execution_plan(plan_json(goal="RECEIVE", steps=self.STEPS[:1]))
+    def test_listing_only_is_the_proposal_phase(self):
+        """İlk turda yalnızca listeleme yapılır; host onay ister, stok değişmez."""
+        parsed = app.parse_execution_plan(plan_json(goal="RECEIVE", steps=self.STEPS[:1]))
+
+        self.assertEqual([s["tool"] for s in parsed["steps"]], ["list_incoming_orders"])
+
+    def test_receiving_requires_a_confirmed_pending_list(self):
+        plan = {"goal": "RECEIVE", "steps": [
+            {"id": "step_1", "tool": "receive_orders",
+             "arguments": {"order_ids": {"$from_context": "pending_receive_ids"}}}]}
+
+        with self.assertRaises(ValueError) as ctx:
+            app.validate_plan_against_state(plan, app.ConversationState())
+        self.assertIn("teslim alma", str(ctx.exception).lower())
+
+        state = app.ConversationState()
+        state.pending_receive_ids = [2, 3]
+        app.validate_plan_against_state(plan, state)   # hata beklenmiyor
 
     def test_receive_goal_cannot_smuggle_other_writes(self):
         steps = self.STEPS + [{"id": "step_3", "tool": "place_order", "arguments": {}}]

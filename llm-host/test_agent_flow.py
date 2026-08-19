@@ -192,6 +192,86 @@ class OrderConfirmationTest(unittest.TestCase):
         self.assertIsNone(response["pendingDraftId"])
 
 
+class ReceiveConfirmationTest(unittest.TestCase):
+    """Taslak: stok değiştirme işlemlerinden önce kullanıcı onayı alınmalı.
+    Teslim alma da satın alma gibi iki aşamalı."""
+
+    LISTING = json.dumps({"type": "execution_plan", "goal": "RECEIVE", "steps": [
+        {"id": "step_1", "tool": "list_incoming_orders", "arguments": {"pending_only": True}}]})
+    RECEIVING = json.dumps({"type": "execution_plan", "goal": "RECEIVE", "steps": [
+        {"id": "step_1", "tool": "receive_orders",
+         "arguments": {"order_ids": {"$from_context": "pending_receive_ids"}}}]})
+
+    PENDING = {"success": True, "count": 2, "orders": [
+        {"id": 2, "product": {"id": 1, "name": "iPhone 15 Pro 128GB"}, "quantity": 8,
+         "status": "PENDING", "expectedDeliveryDate": "2026-08-23T10:39:13"},
+        {"id": 3, "product": {"id": 6, "name": "Kablosuz Klavye"}, "quantity": 6,
+         "status": "PENDING", "expectedDeliveryDate": "2026-08-23T10:39:13"}]}
+
+    def client(self):
+        return FakeMCPClient({
+            "list_incoming_orders": self.PENDING,
+            "receive_orders": lambda args: {"success": True, "count": len(args["order_ids"]),
+                "orders": [{"id": i, "product": {"name": "iPhone 15 Pro 128GB"}, "quantity": 8,
+                            "status": "RECEIVED"} for i in args["order_ids"]]},
+        })
+
+    def test_first_request_only_lists_and_asks(self):
+        client = self.client()
+        agent = web_api.AgentApplication(client, ScriptedLLM(self.LISTING), temp_store(self))
+
+        response = run(agent.chat("c1", "teslim edilen ürünleri stoğa ekle"))
+
+        self.assertEqual(client.called_tools, ["list_incoming_orders"])
+        self.assertNotIn("receive_orders", client.called_tools)
+        self.assertIn("onaylıyor musunuz", response["finalAnswer"])
+        self.assertEqual(response["pendingReceiveIds"], [2, 3])
+
+    def test_receiving_without_confirmation_is_blocked(self):
+        client = self.client()
+        agent = web_api.AgentApplication(client, ScriptedLLM(self.RECEIVING), temp_store(self))
+
+        response = run(agent.chat("c1", "stoğa al"))
+
+        self.assertEqual(client.called_tools, [])
+        self.assertEqual(response["plan"]["goal"], "CLARIFY")
+
+    def test_confirm_endpoint_handles_receiving_too(self):
+        """Onay düğmesi hem taslak hem teslim alma için çalışmalı."""
+        client = self.client()
+        agent = web_api.AgentApplication(client, ScriptedLLM(self.RECEIVING), temp_store(self))
+        agent.store.create("owner", "Sohbet", "c1")
+        state = web_api.ConversationState()
+        state.pending_receive_ids = [2, 3]
+        agent.states["c1"] = state
+
+        response = run(agent.confirm("c1", "owner"))
+
+        self.assertEqual(client.called_tools, ["receive_orders"])
+        self.assertEqual(response["pendingReceiveIds"], [])
+
+    def test_confirm_endpoint_reports_when_nothing_is_pending(self):
+        agent = web_api.AgentApplication(self.client(), ScriptedLLM(self.RECEIVING), temp_store(self))
+        agent.store.create("owner", "Sohbet", "c1")
+
+        with self.assertRaises(Exception):
+            run(agent.confirm("c1", "owner"))
+
+    def test_confirmation_applies_and_clears_the_pending_list(self):
+        client = self.client()
+        agent = web_api.AgentApplication(client, ScriptedLLM(self.RECEIVING), temp_store(self))
+        state = web_api.ConversationState()
+        state.pending_receive_ids = [2, 3]
+        agent.states["c1"] = state
+
+        response = run(agent.chat("c1", "evet, stoğa al"))
+
+        self.assertEqual(client.called_tools, ["receive_orders"])
+        self.assertEqual(client.calls[0][1]["order_ids"], [2, 3])
+        self.assertIn("stoğa eklendi", response["finalAnswer"])
+        self.assertEqual(response["pendingReceiveIds"], [])
+
+
 class PermissionTest(unittest.TestCase):
     def test_order_is_blocked_without_pending_draft(self):
         order_plan = json.dumps({"type": "execution_plan", "goal": "ORDER", "steps": [
