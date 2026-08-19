@@ -9,7 +9,7 @@ if importlib.util.find_spec("fastapi") is None:
     raise unittest.SkipTest("FastAPI optional dependency is not installed")
 
 from app import CachedProcurementPlan, ConversationState
-from web_api import AgentApplication, ChatRequest, ConversationStore, now
+from web_api import AgentApplication, ChatRequest, ConversationStore, conversation_title, now
 
 
 class WebApiTest(unittest.TestCase):
@@ -38,6 +38,17 @@ class WebApiTest(unittest.TestCase):
         conversation = self.store.create("owner", "Silinecek")
         self.store.delete(conversation["id"], "owner")
         self.assertEqual(self.store.list("owner"), [])
+
+    def test_first_message_replaces_and_persists_default_title(self):
+        conversation = self.store.create("owner")
+        self.store.ensure(conversation["id"], "owner", "50.000 TL bütçeyle eksik ürünleri satın al")
+        self.assertEqual(self.store.get(conversation["id"], "owner")["title"],
+                         "50.000 TL Bütçeli Satın Alma")
+
+    def test_title_falls_back_to_a_short_version_of_message(self):
+        title = conversation_title("Lütfen Galaxy S24 Ultra için ayrıntılı bir çalışma yapabilir misin?")
+        self.assertLessEqual(len(title.split()), 6)
+        self.assertIn("Galaxy", title)
 
     def test_confirm_without_pending_draft(self):
         agent = AgentApplication(AsyncMock(), AsyncMock(), self.store)
