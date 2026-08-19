@@ -126,6 +126,23 @@ class PermissionTest(unittest.TestCase):
         self.assertEqual(client.called_tools, [])
         self.assertEqual(response["plan"]["goal"], "CLARIFY")
 
+    def test_order_refusal_message_is_written_for_humans(self):
+        """Doğrulama metni modele yazılmıştır; kullanıcıya ham hâliyle basılmamalı."""
+        order_plan = json.dumps({"type": "execution_plan", "goal": "ORDER", "steps": [
+            {"id": "step_1", "tool": "place_order",
+             "arguments": {"draft_id": {"$from_context": "pending_draft_id"}}}]})
+        agent = web_api.AgentApplication(
+            FakeMCPClient({"place_order": {"success": True}}), ScriptedLLM(order_plan), temp_store(self))
+
+        response = run(agent.chat("c1", "satın alım yap"))
+        answer = response["finalAnswer"]
+
+        self.assertIn("taslak", answer.lower())
+        for leaked in ("place_order", "calculate_replenishment", "create_purchase_draft", "goal DRAFT"):
+            self.assertNotIn(leaked, answer)
+        # Ham metin kaybolmasın; hata ayıklama için planda dursun.
+        self.assertIn("place_order", response["plan"]["detail"])
+
     def test_write_tools_include_batch_incoming_orders(self):
         self.assertIn("create_incoming_orders", web_api.WRITE_TOOLS)
 

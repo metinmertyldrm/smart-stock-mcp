@@ -253,20 +253,33 @@ class AgentApplication:
             return None
 
     def clarification_response(self, conversation_id, message, permission, state, reason):
-        """Onarim da tutmadi: zinciri durdur, kullaniciya ne yapamadigimizi acikla ve sor."""
-        answer = (
-            "İsteğinizi çalıştırılabilir bir işlem planına dönüştüremedim. "
-            f"Karşılaştığım sorun: {reason} "
-            "İsteğinizi biraz daha belirgin yazar mısınız? Örneğin hangi ürün grubunu "
-            "(stokta olmayanlar, kritik seviyedekiler, belirli bir kategori), hangi ölçütü "
-            "(en ucuz, en hızlı, en yüksek puanlı) ve sonucu satın alma planı olarak mı yoksa "
-            "taslak sipariş olarak mı istediğinizi belirtebilirsiniz."
-        )
+        """Onarim da tutmadi: zinciri durdur, kullaniciya ne yapamadigimizi acikla ve sor.
+
+        Dogrulama hatalarinin metni MODELE yazilmistir (onarim turunda yol gostersin diye).
+        Kullaniciya oldugu gibi basmak teknik ve kafa karistirici; burada insana
+        yonelik bir karsiligi veriliyor, ham metin ayrica plan detayinda saklaniyor.
+        """
+        detail = str(reason)
+        if "place_order" in detail:
+            answer = (
+                "Onay bekleyen bir taslak sipariş olmadığı için doğrudan sipariş veremem. "
+                "Önce neyi almak istediğinizi söyleyin, taslağı hazırlayayım. "
+                "Örneğin: \"Stokta azalan ürünler için en ucuz tekliflerden taslak sipariş oluştur.\" "
+                "Taslağı gösterdikten sonra onayınızı isteyeceğim."
+            )
+        else:
+            answer = (
+                "İsteğinizi çalıştırılabilir bir işlem planına dönüştüremedim. "
+                "Biraz daha belirgin yazar mısınız? Hangi ürün grubunu (stokta olmayanlar, "
+                "kritik seviyedekiler, belirli bir kategori), hangi ölçütü (en ucuz, en hızlı, "
+                "en yüksek puanlı) ve sonucu satın alma planı olarak mı yoksa taslak sipariş "
+                "olarak mı istediğinizi belirtirseniz yardımcı olabilirim."
+            )
         self.store.add_message(conversation_id, "user", message)
         response = {
             "conversationId": conversation_id,
             "permissionLevel": permission,
-            "plan": {"type": "execution_plan", "goal": "CLARIFY", "steps": []},
+            "plan": {"type": "execution_plan", "goal": "CLARIFY", "steps": [], "detail": detail},
             "trace": [],
             "finalAnswer": answer,
             "pendingDraftId": state.pending_draft_id,
