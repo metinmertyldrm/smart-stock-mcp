@@ -64,36 +64,89 @@ spring:
     password: your_postgresql_password
 ```
 
-The backend updates the required database schema without deleting existing inventory or order data and idempotently loads the sample data from `data.sql` during startup. To intentionally reset a local database, start the backend with `DB_DDL_AUTO=create`. SQL logging is disabled by default and can be enabled with `JPA_SHOW_SQL=true`.
+The normal profile uses `smart_stock`, listens on port `8081`, and updates the schema without deleting existing inventory or order data. `DB_URL` still overrides the complete JDBC URL, while `SERVER_PORT` overrides the port. Do not set `DB_DDL_AUTO=create` for daily development; its default is the non-destructive `update`. SQL logging is disabled by default and can be enabled with `JPA_SHOW_SQL=true`.
 
-### Isolated acceptance database
+### A. Web development environment
 
-State-changing acceptance scenarios must not run against the demo/development database. Create a PostgreSQL database named `smart_stock_acceptance`, then start a separate backend with the acceptance profile:
+Use four PowerShell terminals so the daily web stack remains on `smart_stock` and ports 8081/11434/8000/5173.
 
 ```powershell
-$env:SPRING_PROFILES_ACTIVE = "acceptance"
+# Terminal 1 — PostgreSQL must already expose the smart_stock database
+$env:DB_URL = "jdbc:postgresql://localhost:5432/smart_stock"
 $env:DB_USERNAME = "postgres"
 $env:DB_PASSWORD = "your_password"
+$env:SERVER_PORT = "8081"
 cd stock-service
 mvn spring-boot:run
 ```
 
-The profile defaults to `jdbc:postgresql://localhost:5432/smart_stock_acceptance`, recreates its schema at service startup, and makes the seeded incoming order immediately receivable. Override the complete JDBC URL with `DB_URL` if needed.
+```powershell
+# Terminal 2
+ollama serve
+```
+
+```powershell
+# Terminal 3
+cd llm-host
+$env:STOCK_SERVICE_URL = "http://localhost:8081"
+uvicorn web_api:app --host 0.0.0.0 --port 8000
+```
+
+```powershell
+# Terminal 4
+cd web-ui
+$env:VITE_API_BASE_URL = "http://localhost:8081"
+$env:VITE_LLM_HOST_URL = "http://localhost:8000"
+npm run dev
+```
+
+### B. Isolated acceptance environment
+
+Create `smart_stock_acceptance` once. Start a second Spring process in a new PowerShell terminal; it can run concurrently with the web backend because both its port and database differ:
+
+```powershell
+$env:SPRING_PROFILES_ACTIVE = "acceptance"
+$env:SERVER_PORT = "8082"
+$env:DB_URL = "jdbc:postgresql://localhost:5432/smart_stock_acceptance"
+$env:DB_USERNAME = "postgres"
+$env:DB_PASSWORD = "your_password"
+$env:PGPASSWORD = $env:DB_PASSWORD
+cd stock-service
+mvn spring-boot:run
+```
+
+The acceptance profile defaults to `smart_stock_acceptance` and recreates only that dedicated schema at service startup. The reset wrapper reads the **same `DB_URL` as Spring**, derives host, port, and database from it, and refuses any database whose name does not end in `_acceptance`. Reset and both seed files run in one error-stopping PostgreSQL transaction. This prevents independently configured reset variables from drifting toward `smart_stock`.
 
 For repeatable write scenarios, the acceptance runner requires a reset command. When supplied, it invokes the command before every selected attempt—including read-only scenarios—so scenario ordering cannot leak state. From `llm-host`, run:
 
 ```powershell
+cd llm-host
+$env:STOCK_SERVICE_URL = "http://localhost:8082"
+$env:DB_URL = "jdbc:postgresql://localhost:5432/smart_stock_acceptance"
+$env:DB_USERNAME = "postgres"
+$env:PGPASSWORD = "your_password"
 python acceptance_runner.py `
   --only pending_orders_receive `
   --runs 3 `
-  --reset-command "powershell -NoProfile -File ..\stock-service\scripts\reset-acceptance.ps1"
+  --reset-command 'powershell -NoProfile -File "..\stock-service\scripts\reset-acceptance.ps1"'
 ```
 
-The reset script refuses to operate unless the database name ends in `_acceptance`. Set `ACCEPTANCE_DB_NAME`, `DB_HOST`, `DB_PORT`, `DB_USERNAME`, and `PGPASSWORD` when their defaults do not match your local PostgreSQL setup. Multiple read-only targets can be selected by repeating `--only`:
+`--reset-command` is an explicitly trusted local shell command (not remote input); shell execution is retained so quoted Windows paths containing spaces work. A reset is run before every selected attempt when the option is present. A failure reports both stdout and stderr and stops before that attempt reaches the LLM. Write scenarios cannot start without it. Multiple read-only targets can be selected by repeating `--only` and need no reset by default:
 
 ```powershell
 python acceptance_runner.py --only max_delivery_days --only pending_orders_listing_only --runs 1
 ```
+
+#### Web smoke checklist
+
+- Open <http://localhost:5173> and verify dashboard KPI data loads.
+- Verify the stock table and product filters work.
+- Open the marketplace and pending-order pages.
+- Verify AI chat communicates with <http://localhost:8000>.
+- Send “Bekleyen siparişleri kontrol et ve teslim edilen ürünleri stoğa ekle.” and verify the first turn only lists orders and does not change stock.
+- Before approval, verify the trace contains `list_incoming_orders` but not `receive_orders`.
+- Send “Onaylıyorum.” and verify only records whose delivery date has arrived are added to stock; the new trace must contain `receive_orders`.
+- Exercise delivery/rating/budget commands and verify `max_delivery_days`, `min_rating`, and `max_total_budget` appear with the intended values in trace arguments.
 
 ### 3. Build and Run the Spring Boot Backend
 
