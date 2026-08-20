@@ -1,11 +1,14 @@
 """Kabul koşucusunun değerlendirme mantığı (gerçek yığın olmadan test edilir)."""
 import unittest
+from unittest.mock import patch
 
 from test_support import install_optional_stubs
 
 install_optional_stubs()
 
-from acceptance_runner import SCENARIOS, collect_arguments, evaluate, summarize  # noqa: E402
+from acceptance_runner import (SCENARIOS, collect_arguments, evaluate,
+                               reset_acceptance_state, select_scenarios,
+                               summarize)  # noqa: E402
 
 
 def response(goal, steps, succeeded=True, answer="cevap"):
@@ -197,6 +200,43 @@ class ScenarioDefinitionTest(unittest.TestCase):
         for scenario in SCENARIOS:
             self.assertTrue(scenario["turns"], scenario["id"])
             self.assertIn("expect", scenario)
+
+
+class AcceptanceResetTest(unittest.TestCase):
+    @patch("acceptance_runner.subprocess.run")
+    def test_reset_command_is_executed_and_output_is_captured(self, run):
+        run.return_value.returncode = 0
+
+        reset_acceptance_state("reset-db", "pending_orders_receive", 2)
+
+        run.assert_called_once_with(
+            "reset-db", shell=True, text=True, capture_output=True)
+
+    @patch("acceptance_runner.subprocess.run")
+    def test_reset_failure_stops_the_acceptance_run(self, run):
+        run.return_value.returncode = 7
+        run.return_value.stderr = "database refused reset"
+        run.return_value.stdout = ""
+
+        with self.assertRaisesRegex(RuntimeError, "database refused reset"):
+            reset_acceptance_state("reset-db", "pending_orders_receive", 1)
+
+
+class ScenarioSelectionTest(unittest.TestCase):
+    def test_multiple_only_values_select_multiple_scenarios(self):
+        selected, missing = select_scenarios(
+            ["max_delivery_days", "pending_orders_listing_only"])
+
+        self.assertEqual(
+            [scenario["id"] for scenario in selected],
+            ["max_delivery_days", "pending_orders_listing_only"])
+        self.assertEqual(missing, set())
+
+    def test_unknown_only_values_are_reported(self):
+        selected, missing = select_scenarios(["max_delivery_days", "does_not_exist"])
+
+        self.assertEqual([scenario["id"] for scenario in selected], ["max_delivery_days"])
+        self.assertEqual(missing, {"does_not_exist"})
 
 
 if __name__ == "__main__":

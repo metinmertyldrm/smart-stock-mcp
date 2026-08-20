@@ -19,6 +19,7 @@ import argparse
 import asyncio
 import json
 import os
+import subprocess
 import statistics
 import sys
 import tempfile
@@ -289,7 +290,28 @@ class RecordingLLM:
         return self.inner.generate(messages)
 
 
-async def run_scenarios(scenarios, runs, verbose=False):
+def reset_acceptance_state(command, scenario_id, run_number):
+    """Reset the isolated business database before a selected scenario run."""
+    print(f"  [RESET] {scenario_id} #{run_number}")
+    completed = subprocess.run(command, shell=True, text=True, capture_output=True)
+    if completed.returncode:
+        detail = (completed.stderr or completed.stdout).strip()
+        raise RuntimeError(f"Acceptance reset failed ({completed.returncode}): {detail}")
+
+
+def select_scenarios(only=None, include_writes=False):
+    """Select requested scenarios while preserving their canonical order."""
+    if only:
+        requested = set(only)
+        selected = [scenario for scenario in SCENARIOS if scenario["id"] in requested]
+        missing = requested - {scenario["id"] for scenario in selected}
+        return selected, missing
+    if include_writes:
+        return SCENARIOS, set()
+    return [scenario for scenario in SCENARIOS if not scenario.get("writes")], set()
+
+
+async def run_scenarios(scenarios, runs, verbose=False, reset_command=None):
     from app import MARKETPLACE_SERVER_PATH, STOCK_SERVER_PATH
     from llm import LLMService
     from mcp_client import MCPClient
@@ -308,6 +330,8 @@ async def run_scenarios(scenarios, runs, verbose=False):
         for scenario in scenarios:
             scenario_runs = []
             for index in range(runs):
+                if reset_command:
+                    reset_acceptance_state(reset_command, scenario["id"], index + 1)
                 conversation_id = f"acc-{scenario['id']}-{index}-{uuid.uuid4().hex[:6]}"
                 started = time.perf_counter()
                 response = None
@@ -396,19 +420,23 @@ def main():
     parser.add_argument("--runs", type=int, default=3, help="senaryo başına tekrar (varsayılan 3)")
     parser.add_argument("--include-writes", action="store_true",
                         help="taslak/sipariş oluşturan senaryoları da çalıştır (veriyi değiştirir)")
-    parser.add_argument("--only", help="yalnızca bu senaryo id'sini çalıştır")
+    parser.add_argument("--only", action="append",
+                        help="yalnızca bu senaryo id'sini çalıştır (birden çok kez verilebilir)")
+    parser.add_argument("--reset-command",
+                        help="her yazmalı denemeden önce çalıştırılacak acceptance DB reset komutu")
     parser.add_argument("--verbose", action="store_true", help="her koşuda sorunları yazdır")
     parser.add_argument("--json", help="ayrıntılı sonucu bu dosyaya yaz")
     args = parser.parse_args()
 
-    scenarios = SCENARIOS
-    if args.only:
-        scenarios = [s for s in scenarios if s["id"] == args.only]
-        if not scenarios:
-            print(f"Bilinmeyen senaryo: {args.only}")
-            return 2
-    elif not args.include_writes:
-        scenarios = [s for s in scenarios if not s.get("writes")]
+    scenarios, missing = select_scenarios(args.only, args.include_writes)
+    if missing:
+        print(f"Bilinmeyen senaryo: {', '.join(sorted(missing))}")
+        return 2
+
+    if any(s.get("writes") for s in scenarios) and not args.reset_command:
+        print("Yazmalı kabul senaryoları izole bir başlangıç durumu gerektirir.\n"
+              "--reset-command verin; PowerShell örneği README'de bulunuyor.")
+        return 2
 
     print("Ön kontrol:")
     problems = preflight()
@@ -424,7 +452,8 @@ def main():
         print("(yazma senaryoları atlandı; dahil etmek için --include-writes)")
     print()
 
-    results, llm_calls = asyncio.run(run_scenarios(scenarios, args.runs, args.verbose))
+    results, llm_calls = asyncio.run(run_scenarios(
+        scenarios, args.runs, args.verbose, args.reset_command))
     print_report(results, llm_calls)
 
     if args.json:
