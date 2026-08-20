@@ -67,6 +67,45 @@ def filter_marketplace_offers(
     return filtered
 
 
+NUMERIC_FILTERS = ("min_rating", "max_delivery_days", "max_unit_price",
+                   "max_shipping_cost", "max_total_budget")
+
+
+def normalize_filters(value):
+    """'filters' argumanini dogrular ve sayisal alanlari sayiya cevirir.
+
+    Model bu nesneyi zaman zaman duz metin ("min_rating=4.5") ya da sayilari
+    string olarak ("4.5") yaziyor. Ilki ham `'str' object has no attribute
+    'get'` uretiyordu, ikincisi karsilastirmada TypeError veriyordu; ikisi de
+    kullaniciya teknik hata olarak gidiyordu. Hata yerine ne bekledigimizi
+    soyluyoruz ki onarim turundaki model duzeltebilsin.
+
+    Donus: (normalized_dict, error_message). error_message None degilse
+    normalized_dict kullanilmamalidir.
+    """
+    if value is None:
+        return {}, None
+    if not isinstance(value, dict):
+        return None, (
+            "'filters' must be an object like "
+            '{"min_rating": 4.5, "max_delivery_days": 3}; received '
+            f"{type(value).__name__}."
+        )
+
+    normalized = dict(value)
+    for key in NUMERIC_FILTERS:
+        raw = normalized.get(key)
+        if raw is None:
+            continue
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            continue
+        try:
+            normalized[key] = float(str(raw).replace(",", "."))
+        except (TypeError, ValueError):
+            return None, f"'filters.{key}' must be a number; received {raw!r}."
+    return normalized, None
+
+
 def allocate_across_offers(
     offers: list[dict],
     requested_quantity: int,
@@ -845,7 +884,12 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[TextConten
                         )
                     )
                 ]
-            filters = arguments.get("filters") or {}
+            filters, filters_error = normalize_filters(arguments.get("filters"))
+            if filters_error:
+                return [TextContent(type="text", text=json.dumps({
+                    "success": False,
+                    "error": filters_error,
+                }, ensure_ascii=False))]
 
             # Sekli bozuk girdi asagida ham AttributeError uretiyordu
             # ("'str' object has no attribute 'get'") ve onarim turundaki modele

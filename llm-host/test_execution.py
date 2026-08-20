@@ -110,6 +110,42 @@ class ProcurementChainTest(unittest.TestCase):
         self.assertEqual([item["quantity"] for item in registered], [8, 30])
 
 
+class ReceivedOrdersMessageTest(unittest.TestCase):
+    """Teslim alma cevabı: kısmi başarı gizlenmemeli, ham JSON basılmamalı."""
+
+    def test_all_received_lists_products_and_quantities(self):
+        text = app.format_received_orders({
+            "success": True, "count": 2, "failed": [],
+            "orders": [
+                {"quantity": 5, "product": {"name": "iPhone"}},
+                {"quantity": 8, "product": {"name": "Galaxy S24"}}]})
+
+        self.assertIn("2 sipariş teslim alındı", text)
+        self.assertIn("iPhone: +5 adet", text)
+        self.assertIn("Galaxy S24: +8 adet", text)
+
+    def test_partial_failure_is_shown_not_hidden(self):
+        text = app.format_received_orders({
+            "success": True, "count": 1,
+            "orders": [{"quantity": 5, "product": {"name": "iPhone"}}],
+            "failed": [{"order_id": 9, "error": "Teslimat tarihi gelmedi."}]})
+
+        self.assertIn("1 sipariş teslim alındı", text)
+        self.assertIn("1 sipariş teslim alınamadı", text)
+        self.assertIn("#9", text)
+        self.assertIn("Teslimat tarihi gelmedi.", text)
+
+    def test_failure_without_detail_still_says_something_useful(self):
+        text = app.format_received_orders({
+            "orders": [], "failed": [{"order_id": 3}]})
+
+        self.assertIn("#3", text)
+        self.assertIn("Teslimat hazır değil.", text)
+
+    def test_nothing_to_report(self):
+        self.assertEqual(app.format_received_orders({}), "Teslim alınan sipariş yok.")
+
+
 if __name__ == "__main__":
     unittest.main()
 

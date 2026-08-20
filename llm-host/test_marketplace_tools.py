@@ -88,6 +88,61 @@ class ItemValidationTest(unittest.TestCase):
         self.assertIn("No items provided", result["error"])
 
 
+class FilterValidationTest(unittest.TestCase):
+    """Regresyon: 'filters' string gelince ham 'str object has no attribute get' patlıyordu.
+
+    Kabul koşumunda tam olarak filtre gerektiren iki senaryo bu hatayı verdi
+    (min_rating ve max_delivery_days komutları).
+    """
+
+    def test_string_instead_of_object_is_explained(self):
+        result = call("create_procurement_plan", {
+            "items": [{"product_id": 1, "quantity": 5}],
+            "filters": "min_rating=4.5"})
+
+        self.assertFalse(result["success"])
+        self.assertIn("'filters' must be an object", result["error"])
+        self.assertIn("received str", result["error"])
+        self.assertNotIn("has no attribute", result["error"])
+
+    def test_numeric_value_written_as_text_is_accepted(self):
+        """Model sayıyı tırnak içinde yazdığında isteği reddetmek gereksiz katılık."""
+        normalized, error = tools.normalize_filters({"min_rating": "4.5"})
+
+        self.assertIsNone(error)
+        self.assertEqual(normalized["min_rating"], 4.5)
+
+    def test_comma_decimal_is_accepted(self):
+        normalized, error = tools.normalize_filters({"max_total_budget": "50000,50"})
+
+        self.assertIsNone(error)
+        self.assertEqual(normalized["max_total_budget"], 50000.5)
+
+    def test_unparseable_number_names_the_field(self):
+        normalized, error = tools.normalize_filters({"max_delivery_days": "üç gün"})
+
+        self.assertIsNone(normalized)
+        self.assertIn("filters.max_delivery_days", error)
+        self.assertIn("must be a number", error)
+
+    def test_missing_filters_is_not_an_error(self):
+        self.assertEqual(tools.normalize_filters(None), ({}, None))
+
+    def test_unknown_keys_are_left_alone(self):
+        """Bilinmeyen anahtarı reddetmek modeli gereksiz onarım turuna sokar."""
+        normalized, error = tools.normalize_filters({"category": "Elektronik"})
+
+        self.assertIsNone(error)
+        self.assertEqual(normalized["category"], "Elektronik")
+
+    def test_boolean_is_not_silently_read_as_a_number(self):
+        """True/1 karışması sessiz yanlış filtre üretir."""
+        normalized, error = tools.normalize_filters({"min_rating": True})
+
+        self.assertIsNone(normalized)
+        self.assertIn("filters.min_rating", error)
+
+
 class AllocationReasonTest(unittest.TestCase):
     """Boş tahsis 'uygun teklif yok' deyip susuyordu; artık nedenini söylüyor."""
 

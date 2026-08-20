@@ -174,6 +174,28 @@ async def list_tools() -> list[Tool]:
             }
         ),
         Tool(
+            name="receive_orders",
+            description=(
+                "Receive multiple incoming orders in one call, adding their quantities "
+                "to warehouse stock. Use this after the user has CONFIRMED which awaited "
+                "deliveries should be taken into stock; pass the ids from "
+                "list_incoming_orders. Each order is validated independently; the result "
+                "reports both received and failed ids."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "order_ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "Incoming order ids to receive."
+                    }
+                },
+                "required": ["order_ids"],
+                "additionalProperties": False,
+            }
+        ),
+        Tool(
             name="receive_order",
             description="Receive a pending incoming order, adding its quantity to current stock level.",
             inputSchema={
@@ -185,25 +207,6 @@ async def list_tools() -> list[Tool]:
                     }
                 },
                 "required": ["order_id"],
-                "additionalProperties": False,
-            }
-        ),
-        Tool(
-            name="receive_orders",
-            description=(
-                "Receive previously confirmed incoming orders. Each order is validated "
-                "independently; the result reports both received and failed IDs."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "order_ids": {
-                        "type": "array",
-                        "items": {"type": "integer"},
-                        "minItems": 1,
-                    }
-                },
-                "required": ["order_ids"],
                 "additionalProperties": False,
             }
         ),
@@ -331,6 +334,40 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[TextConten
                     "success": False,
                     "error": "Failed to create incoming order"
                 }
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(result, ensure_ascii=False)
+                )
+            ]
+
+        elif name == "receive_orders":
+            order_ids = arguments.get("order_ids")
+            if not order_ids:
+                return [TextContent(type="text", text=json.dumps({
+                    "success": False,
+                    "error": ("No order ids provided. Call list_incoming_orders first and "
+                              "pass the confirmed ids via $from_context pending_receive_ids."),
+                }, ensure_ascii=False))]
+
+            if not isinstance(order_ids, list):
+                return [TextContent(type="text", text=json.dumps({
+                    "success": False,
+                    "error": f"'order_ids' must be a list of integers; received {type(order_ids).__name__}.",
+                }, ensure_ascii=False))]
+
+            # Servis (teslim alinanlar, alinamayanlar) demeti donduruyor: bir
+            # teslimatin reddedilmesi digerlerini gizlememeli.
+            received, failed = await service.receive_orders([int(i) for i in order_ids])
+            result = {
+                # Hicbiri alinamadiysa bunu basari saymak sessiz yanlis cevap uretir.
+                "success": bool(received) or not failed,
+                "count": len(received),
+                "orders": [o.model_dump() for o in received],
+                "failed": failed,
+            }
+            if failed and not received:
+                result["error"] = "Secilen siparislerin hicbiri teslim alinamadi."
             return [
                 TextContent(
                     type="text",
