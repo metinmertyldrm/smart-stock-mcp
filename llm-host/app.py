@@ -1034,6 +1034,63 @@ def clean_tool_results_for_reasoning(results: dict) -> dict:
     return cleaned
 
 
+# Bir adimin zorunlu koleksiyonu, onceki adimin BOS sonucundan gelebiliyor.
+# Bu teknik bir hata degil, is durumudur: siparis edilecek urun yoktur.
+# Tool'a bos liste gonderip "No items provided." almak kullaniciya hicbir sey anlatmiyor
+# ve onarim turu da bosa calisiyor (yeniden denemek veriyi var etmez).
+COLLECTION_ARGUMENTS = {
+    "create_procurement_plan": "items",
+    "create_purchase_draft": "items",
+    "create_incoming_orders": "items",
+    "receive_orders": "order_ids",
+}
+
+EMPTY_SOURCE_REASONS = {
+    "list_low_stock": "Kritik seviyede ürün bulunmuyor",
+    "list_out_of_stock": "Stokta tükenmiş ürün bulunmuyor",
+    "list_products": "Ürün listesi boş",
+    "search_products": "Aramayla eşleşen ürün bulunamadı",
+    "calculate_replenishment": "Şu an sipariş edilmesi gereken ürün bulunmuyor",
+    "get_stock_replenishment_needed": "Şu an sipariş edilmesi gereken ürün bulunmuyor",
+    "list_incoming_orders": "Teslim alınmayı bekleyen sipariş bulunmuyor",
+    "create_procurement_plan": "Satın alma planı boş kaldı",
+}
+
+TARGET_ACTIONS = {
+    "create_procurement_plan": "satın alma planı oluşturulamadı",
+    "create_purchase_draft": "sipariş taslağı oluşturulamadı",
+    "create_incoming_orders": "beklenen stok kaydı yapılamadı",
+    "receive_orders": "teslim alma işlemi yapılamadı",
+}
+
+
+def detect_empty_input(tool_name: str, arguments: dict, step: dict, plan: dict):
+    """Adim, onceki adimin bos sonucu yuzunden calistirilamiyorsa is gerekcesini dondurur."""
+    key = COLLECTION_ARGUMENTS.get(tool_name)
+    if not key:
+        return None
+
+    value = arguments.get(key)
+    if not isinstance(value, list) or value:
+        return None
+
+    # Kaynak adimi bul: {"$from": "step_1.products", ...}
+    raw = (step.get("arguments") or {}).get(key)
+    source_tool = None
+    if isinstance(raw, dict) and isinstance(raw.get("$from"), str):
+        source_step_id = raw["$from"].partition(".")[0]
+        for index, other in enumerate(plan.get("steps") or []):
+            if not isinstance(other, dict):
+                continue
+            if (other.get("id") or f"step_{index + 1}") == source_step_id:
+                source_tool = other.get("tool")
+                break
+
+    reason = EMPTY_SOURCE_REASONS.get(source_tool, "Bu işlem için uygun kalem bulunamadı")
+    action = TARGET_ACTIONS.get(tool_name, "işlem tamamlanamadı")
+    return f"{reason}, bu yüzden {action}."
+
+
 async def execute_plan(plan: dict, client: MCPClient, available_tool_names: set[str], state=None):
     if plan.get("goal", "").upper() == "CHAT":
         return {
@@ -1092,6 +1149,19 @@ async def execute_plan(plan: dict, client: MCPClient, available_tool_names: set[
                 state
             )
             arguments = remove_none_values(arguments)
+
+            empty_reason = detect_empty_input(tool_name, arguments, step, plan)
+            if empty_reason:
+                return {
+                    "success": False,
+                    "failed_step": step_id,
+                    "failed_tool": tool_name,
+                    "error": empty_reason,
+                    # Onarim fayda etmez: yeniden planlamak olmayan veriyi var etmez.
+                    "business_reason": empty_reason,
+                    "retryable": False,
+                    "results": execution_results,
+                }
 
             # Clean up invalid category argument values for calculate_replenishment
             if tool_name == "calculate_replenishment":

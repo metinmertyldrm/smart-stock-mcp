@@ -162,13 +162,36 @@ class ScenarioDefinitionTest(unittest.TestCase):
         ids = [scenario["id"] for scenario in SCENARIOS]
         self.assertEqual(len(ids), len(set(ids)))
 
+    WRITE_TOOLS = {"place_order", "create_purchase_draft", "receive_orders", "receive_order"}
+
     def test_write_scenarios_are_marked(self):
         """Veri değiştiren senaryolar varsayılan koşumda çalışmamalı."""
         for scenario in SCENARIOS:
             tools = scenario.get("expect", {}).get("tools_required", [])
-            if {"place_order", "create_purchase_draft"} & set(tools):
+            if self.WRITE_TOOLS & set(tools):
                 self.assertTrue(scenario.get("writes"),
                                 f"{scenario['id']} yazma senaryosu olarak işaretlenmemiş")
+
+    # Taslak olusturmak onay ISTEMENIN kendisidir; siparisi kesinlestirmez ve
+    # stogu degistirmez. Onay kapisi yalnizca bu iki isleme uygulanir.
+    COMMIT_TOOLS = {"place_order", "receive_orders", "receive_order"}
+
+    def test_commit_scenarios_include_a_confirmation_turn(self):
+        """Onay kapısı: sipariş kesinleştiren veya stok artıran araç ilk turda çağrılamaz."""
+        for scenario in SCENARIOS:
+            tools = set(scenario.get("expect", {}).get("tools_required", []))
+            if self.COMMIT_TOOLS & tools:
+                self.assertGreaterEqual(
+                    len(scenario["turns"]), 2,
+                    f"{scenario['id']} tek turda yazma bekliyor; onay adımı yok")
+
+    def test_receiving_never_shares_a_turn_with_the_listing(self):
+        """Regresyon: senaryo bir turda list_incoming_orders + receive_order bekliyordu."""
+        for scenario in SCENARIOS:
+            tools = set(scenario.get("expect", {}).get("tools_required", []))
+            self.assertFalse(
+                {"receive_orders", "receive_order"} & tools and "list_incoming_orders" in tools,
+                f"{scenario['id']} teslim almayı listeleme turuyla birleştiriyor")
 
     def test_every_scenario_has_turns_and_expectations(self):
         for scenario in SCENARIOS:

@@ -87,10 +87,27 @@ SCENARIOS = [
         "id": "pending_orders_receive",
         "kaynak": "Taslak örnek komut 5",
         "writes": True,
+        # Teslim alma stogu artirir; taslaktaki onay kurali geregi tek turda
+        # yapilamaz. Birinci tur yalnizca listeler, ikinci tur onaydan sonra
+        # stoga alir. Degerlendirme son turu olctugu icin beklenti receive_orders.
+        "turns": ["Bekleyen siparişleri kontrol et ve teslim edilen ürünleri stoğa ekle.",
+                  "Onaylıyorum."],
+        "expect": {
+            "goals": ["RECEIVE"],
+            "tools_required": ["receive_orders"],
+            # Tekil arac onay kapisini atlamanin klasik yolu: listeyle ayni turda cagrilir.
+            "tools_forbidden": ["receive_order"],
+        },
+    },
+    {
+        "id": "pending_orders_listing_only",
+        "kaynak": "Taslak örnek komut 5 — onay kapisi",
+        # Ilk tur stok DEGISTIRMEMELI; bu yuzden writes=False, salt okunur kosumda da calisir.
         "turns": ["Bekleyen siparişleri kontrol et ve teslim edilen ürünleri stoğa ekle."],
         "expect": {
             "goals": ["RECEIVE"],
-            "tools_required": ["list_incoming_orders", "receive_order"],
+            "tools_required": ["list_incoming_orders"],
+            "tools_forbidden": ["receive_orders", "receive_order"],
         },
     },
     {

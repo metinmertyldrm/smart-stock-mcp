@@ -277,7 +277,8 @@ GOALS:
 - PLAN: Build procurement plan (ends with create_procurement_plan).
 - DRAFT: Create purchase draft (ends with create_purchase_draft).
 - ORDER: Finalize draft (ends with place_order).
-- RECEIVE: Check awaited deliveries and take them into stock (must include receive_order).
+- RECEIVE: Awaited deliveries. Two phases: first list_incoming_orders ONLY;
+  after the user confirms, receive_orders. See rule 21.
 
 EXAMPLES:
 1. "iPhone 4 mü 3 mü almalıyım?" -> goal: REASON, steps:

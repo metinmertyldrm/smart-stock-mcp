@@ -259,7 +259,9 @@ class AgentApplication:
             raise HTTPException(403, "Salt okunur istekte yazma işlemi engellendi.")
         self.store.add_message(conversation_id, "user", message)
         execution = await execute_plan(plan, self.client, names, state)
-        if not execution.get("success"):
+        if not execution.get("success") and execution.get("retryable") is not False:
+            # retryable=False: is durumu (or. siparis edilecek urun yok).
+            # Yeniden planlamak olmayan veriyi var etmez, kullaniciyi bosuna bekletir.
             previous_tools = [s.get("tool") for s in plan.get("steps", [])]
             new_plan, new_execution = await self.repair(system_prompt, message, plan, execution, names, state, permission, conversation_id)
             if new_execution.get("success") and new_plan is not plan:
@@ -355,7 +357,10 @@ class AgentApplication:
         else:
             answer = format_purchase_draft(final) if last_tool == "create_purchase_draft" else format_procurement_plan(final) if last_tool == "create_procurement_plan" else format_final_answer(final, last_tool)
         if not execution.get("success"):
-            answer = "İşlem tamamlanamadı. Lütfen isteğinizi kontrol edip yeniden deneyin."
+            # Teknik hata ile is durumunu ayirt et; ham hata karar gunlugunde kaliyor.
+            answer = execution.get("business_reason") or (
+                "İşlem tamamlanamadı. Lütfen isteğinizi kontrol edip yeniden deneyin."
+            )
         # Taslak kimligini yalnizca create_purchase_draft adiminin sonucundan al.
         # Tool MarketplacePurchaseDraftResponse dondurur ve anahtar "id"dir; ama
         # herhangi bir adimdaki "id" alanini kabul etmek tehlikeli olur (place_order
