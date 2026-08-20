@@ -7,7 +7,8 @@ from test_support import install_optional_stubs
 install_optional_stubs()
 
 from acceptance_runner import (SCENARIOS, collect_arguments, evaluate,
-                               reset_acceptance_state, select_scenarios,
+                               reset_acceptance_state, reset_requirement_error,
+                               select_scenarios,
                                summarize)  # noqa: E402
 
 
@@ -221,6 +222,18 @@ class AcceptanceResetTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "database refused reset"):
             reset_acceptance_state("reset-db", "pending_orders_receive", 1)
 
+    @patch("acceptance_runner.subprocess.run")
+    def test_reset_failure_reports_both_output_streams(self, run):
+        run.return_value.returncode = 3
+        run.return_value.stdout = "psql output"
+        run.return_value.stderr = "psql error"
+
+        with self.assertRaises(RuntimeError) as raised:
+            reset_acceptance_state("reset-db", "pending_orders_receive", 1)
+
+        self.assertIn("stdout:\npsql output", str(raised.exception))
+        self.assertIn("stderr:\npsql error", str(raised.exception))
+
 
 class ScenarioSelectionTest(unittest.TestCase):
     def test_multiple_only_values_select_multiple_scenarios(self):
@@ -237,6 +250,16 @@ class ScenarioSelectionTest(unittest.TestCase):
 
         self.assertEqual([scenario["id"] for scenario in selected], ["max_delivery_days"])
         self.assertEqual(missing, {"does_not_exist"})
+
+    def test_write_scenario_requires_reset_command(self):
+        selected, _ = select_scenarios(["pending_orders_receive"])
+        self.assertIn("--reset-command", reset_requirement_error(selected, None))
+
+    def test_default_read_only_selection_does_not_require_reset(self):
+        selected, _ = select_scenarios()
+        self.assertTrue(selected)
+        self.assertFalse(any(scenario.get("writes") for scenario in selected))
+        self.assertIsNone(reset_requirement_error(selected, None))
 
 
 if __name__ == "__main__":

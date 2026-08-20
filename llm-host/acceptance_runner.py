@@ -10,10 +10,10 @@ Kullanım (llm-host klasöründen, venv aktifken):
     python acceptance_runner.py --include-writes   # taslak/sipariş senaryoları da
     python acceptance_runner.py --only draft_then_confirm
 
-Ön koşul: Spring Boot (8081) ve Ollama (11434) çalışıyor olmalı. uvicorn'a gerek yok.
+Ön koşul: acceptance Spring Boot (8082) ve Ollama (11434) çalışıyor olmalı.
+STOCK_SERVICE_URL=http://localhost:8082 ayarlanmalıdır; uvicorn'a gerek yok.
 
-DİKKAT: --include-writes gerçek taslak ve sipariş kaydı oluşturur, stok verisini
-değiştirir. Demo veritabanında çalıştır.
+DİKKAT: Yazmalı senaryolar yalnızca izole acceptance veritabanında çalıştırılmalıdır.
 """
 import argparse
 import asyncio
@@ -293,10 +293,15 @@ class RecordingLLM:
 def reset_acceptance_state(command, scenario_id, run_number):
     """Reset the isolated business database before a selected scenario run."""
     print(f"  [RESET] {scenario_id} #{run_number}")
+    # This is an explicitly supplied, trusted local operator command. A shell is
+    # intentional so quoted PowerShell paths (including spaces) work on Windows.
     completed = subprocess.run(command, shell=True, text=True, capture_output=True)
     if completed.returncode:
-        detail = (completed.stderr or completed.stdout).strip()
-        raise RuntimeError(f"Acceptance reset failed ({completed.returncode}): {detail}")
+        stdout = completed.stdout.strip() or "(empty)"
+        stderr = completed.stderr.strip() or "(empty)"
+        raise RuntimeError(
+            f"Acceptance reset failed ({completed.returncode})\n"
+            f"stdout:\n{stdout}\nstderr:\n{stderr}")
 
 
 def select_scenarios(only=None, include_writes=False):
@@ -309,6 +314,14 @@ def select_scenarios(only=None, include_writes=False):
     if include_writes:
         return SCENARIOS, set()
     return [scenario for scenario in SCENARIOS if not scenario.get("writes")], set()
+
+
+def reset_requirement_error(scenarios, reset_command):
+    """Return an operator-facing error when a write could run without isolation."""
+    if any(scenario.get("writes") for scenario in scenarios) and not reset_command:
+        return ("Yazmalı kabul senaryoları izole bir başlangıç durumu gerektirir.\n"
+                "--reset-command verin; PowerShell örneği README'de bulunuyor.")
+    return None
 
 
 async def run_scenarios(scenarios, runs, verbose=False, reset_command=None):
@@ -433,9 +446,9 @@ def main():
         print(f"Bilinmeyen senaryo: {', '.join(sorted(missing))}")
         return 2
 
-    if any(s.get("writes") for s in scenarios) and not args.reset_command:
-        print("Yazmalı kabul senaryoları izole bir başlangıç durumu gerektirir.\n"
-              "--reset-command verin; PowerShell örneği README'de bulunuyor.")
+    reset_error = reset_requirement_error(scenarios, args.reset_command)
+    if reset_error:
+        print(reset_error)
         return 2
 
     print("Ön kontrol:")
