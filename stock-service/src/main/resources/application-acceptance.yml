@@ -1,0 +1,13 @@
+spring:
+  datasource:
+    # Acceptance must never share the demo/development database.
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/smart_stock_acceptance}
+
+  jpa:
+    hibernate:
+      # Starting the dedicated acceptance service establishes a clean baseline.
+      ddl-auto: create
+
+  sql:
+    init:
+      data-locations: classpath:data.sql,classpath:acceptance-data.sql

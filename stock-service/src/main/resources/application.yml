@@ -10,7 +10,7 @@ spring:
     name: stock-service
 
   datasource:
-    url: jdbc:postgresql://localhost:5432/smart_stock
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/smart_stock}
     username: ${DB_USERNAME}
     password: ${DB_PASSWORD}
     driver-class-name: org.postgresql.Driver

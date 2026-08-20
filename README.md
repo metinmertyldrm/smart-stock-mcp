@@ -66,6 +66,35 @@ spring:
 
 The backend updates the required database schema without deleting existing inventory or order data and idempotently loads the sample data from `data.sql` during startup. To intentionally reset a local database, start the backend with `DB_DDL_AUTO=create`. SQL logging is disabled by default and can be enabled with `JPA_SHOW_SQL=true`.
 
+### Isolated acceptance database
+
+State-changing acceptance scenarios must not run against the demo/development database. Create a PostgreSQL database named `smart_stock_acceptance`, then start a separate backend with the acceptance profile:
+
+```powershell
+$env:SPRING_PROFILES_ACTIVE = "acceptance"
+$env:DB_USERNAME = "postgres"
+$env:DB_PASSWORD = "your_password"
+cd stock-service
+mvn spring-boot:run
+```
+
+The profile defaults to `jdbc:postgresql://localhost:5432/smart_stock_acceptance`, recreates its schema at service startup, and makes the seeded incoming order immediately receivable. Override the complete JDBC URL with `DB_URL` if needed.
+
+For repeatable write scenarios, the acceptance runner requires a reset command. When supplied, it invokes the command before every selected attempt—including read-only scenarios—so scenario ordering cannot leak state. From `llm-host`, run:
+
+```powershell
+python acceptance_runner.py `
+  --only pending_orders_receive `
+  --runs 3 `
+  --reset-command "powershell -NoProfile -File ..\stock-service\scripts\reset-acceptance.ps1"
+```
+
+The reset script refuses to operate unless the database name ends in `_acceptance`. Set `ACCEPTANCE_DB_NAME`, `DB_HOST`, `DB_PORT`, `DB_USERNAME`, and `PGPASSWORD` when their defaults do not match your local PostgreSQL setup. Multiple read-only targets can be selected by repeating `--only`:
+
+```powershell
+python acceptance_runner.py --only max_delivery_days --only pending_orders_listing_only --runs 1
+```
+
 ### 3. Build and Run the Spring Boot Backend
 
 Navigate to the `stock-service` directory:
