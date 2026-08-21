@@ -1,10 +1,11 @@
+import os
 import httpx
 from typing import List, Optional, Union
 from models import Product, Replenishment, IncomingOrder
 
 class ProductService:
-    def __init__(self, base_url: str = "http://localhost:8081"):
-        self.base_url = base_url
+    def __init__(self, base_url: Optional[str] = None):
+        self.base_url = base_url or os.getenv("STOCK_SERVICE_URL", "http://localhost:8081")
 
     async def get_all_products(self) -> List[Product]:
         """Fetch all products from the Spring Boot API."""
@@ -58,7 +59,6 @@ class ProductService:
             normalized = self._normalize_expected(expected_delivery_date)
             if normalized:
                 payload["expectedDeliveryDate"] = normalized
-            
             response = await client.post(f"{self.base_url}/api/orders", json=payload)
             response.raise_for_status()
             return IncomingOrder(**response.json())
@@ -74,7 +74,7 @@ class ProductService:
 
     @staticmethod
     def _normalize_expected(value: Optional[str]) -> Optional[str]:
-        """Backend LocalDateTime bekler; "2026-08-23" gibi gun-only deger 400 uretir."""
+        """Backend LocalDateTime bekler; gun-only degerleri normalize eder."""
         if not value:
             return None
         return value if "T" in value else f"{value}T00:00:00"
@@ -93,7 +93,6 @@ class ProductService:
                 )
                 if expected:
                     payload["expectedDeliveryDate"] = expected
-
                 response = await client.post(f"{self.base_url}/api/orders", json=payload)
                 response.raise_for_status()
                 created.append(IncomingOrder(**response.json()))
