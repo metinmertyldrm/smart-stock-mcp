@@ -27,6 +27,8 @@ The LLM proposes execution plans, but business rules and write-safety controls r
 - Observable execution plan, MCP trace, telemetry and user-facing decision journal.
 - Isolated acceptance database tooling for repeatable write scenarios.
 - React/Vite operations dashboard.
+- Server-issued anonymous bearer sessions for the browser-facing LLM API.
+- Read-only browser stock gateway so mutation endpoints remain on the internal Docker network.
 
 ## Quick start with Docker Compose
 
@@ -44,7 +46,7 @@ git clone https://github.com/metinmertyldrm/smart-stock-mcp.git
 cd smart-stock-mcp
 ```
 
-Optional: copy the environment template if you want to override ports, the local database password, or the Ollama model.
+Optional: copy the environment template if you want to override local ports, the local database password, the Ollama model, or the anonymous session lifetime.
 
 ```bash
 cp .env.example .env
@@ -58,15 +60,17 @@ docker compose up --build
 
 On the first run, the `ollama-init` container downloads `qwen3:8b`, so startup can take several minutes depending on the network connection. The model and PostgreSQL data are kept in named Docker volumes and do not need to be downloaded/recreated on every restart.
 
-Default endpoints:
+Default host-facing endpoints:
 
-| Service | Address |
+| Surface | Address |
 | --- | --- |
-| Web dashboard | `http://localhost:5173` |
-| Spring stock service | `http://localhost:8081` |
-| LLM host API | `http://localhost:8000` |
-| Ollama | `http://localhost:11434` |
-| PostgreSQL | `localhost:5432` |
+| Web dashboard / application gateway | `http://localhost:5173` |
+| Read-only stock API through gateway | `http://localhost:5173/stock/api/...` |
+| Secured LLM API through gateway | `http://localhost:5173/llm/api/...` |
+| Ollama, loopback-only | `http://localhost:11434` |
+| PostgreSQL, loopback-only | `localhost:5432` |
+
+The normal Docker `stock-service` and `llm-host` containers do **not** publish host ports. Browser traffic enters through the web gateway: `/stock` permits only `GET`/`HEAD`, while `/llm` reaches the bearer-authenticated LLM API. This keeps stock mutations and MCP-facing service calls on the Docker-internal network.
 
 Run in the background:
 
@@ -82,19 +86,33 @@ docker compose logs -f llm-host
 docker compose logs -f stock-service
 ```
 
+Run deterministic security checks:
+
+```bash
+python scripts/security_smoke.py
+```
+
+Run the normal full-stack smoke, including one real read-only LLM + MCP turn:
+
+```bash
+python scripts/smoke_stack.py --chat
+```
+
 Stop the stack while keeping data:
 
 ```bash
 docker compose down
 ```
 
-Remove the stack and its local Docker volumes only when you intentionally want to delete local database, conversation, and Ollama model data:
+Remove the stack and its local Docker volumes only when you intentionally want to delete local database, conversation, session and Ollama model data:
 
 ```bash
 docker compose down -v
 ```
 
 The default `DB_PASSWORD=postgres` in Compose is strictly a local-development convenience. Override it in `.env` for any shared environment. This Compose stack is a development/demo topology, not a production deployment configuration.
+
+See [`docs/security.md`](docs/security.md) for the trust boundaries, bearer-session limitations and deployment warnings.
 
 ## Docker acceptance profile
 
@@ -109,7 +127,7 @@ Defaults:
 - acceptance PostgreSQL: `localhost:5433`, database `smart_stock_acceptance`
 - acceptance Spring service: `http://localhost:8082`
 
-This keeps the acceptance database separate from the normal `smart_stock` database. The existing acceptance reset script still refuses database names that do not end in `_acceptance`.
+These acceptance ports are bound to loopback. This keeps the acceptance database separate from the normal `smart_stock` database. The existing acceptance reset script still refuses database names that do not end in `_acceptance`.
 
 For state-changing acceptance runs, execute the runner from the host with the acceptance endpoints and the trusted reset command documented below. The Compose profile only supplies the isolated database/service topology; it does not weaken or bypass the runner's reset requirement.
 
@@ -174,6 +192,8 @@ The normal host topology uses:
 | LLM host HTTP API | 8000 |
 | Vite web UI | 5173 |
 
+Manual host mode is less isolated than the Docker gateway. Keep the Spring and LLM services bound to trusted interfaces and do not expose port 8081 to an untrusted network.
+
 ### 1. Spring Boot backend
 
 ```powershell
@@ -201,11 +221,15 @@ $env:OLLAMA_MODEL = "qwen3:8b"
 
 ### 3. LLM host HTTP API
 
+Use the secured entry point for browser-facing/manual HTTP access:
+
 ```powershell
 cd llm-host
 $env:STOCK_SERVICE_URL = "http://localhost:8081"
-uvicorn web_api:app --host 0.0.0.0 --port 8000
+uvicorn secure_api:app --host 127.0.0.1 --port 8000
 ```
+
+The internal `web_api:app` implementation remains available to trusted tests and development code, but it is not the authenticated public entry point.
 
 The CLI entry point remains available:
 
@@ -226,7 +250,7 @@ $env:VITE_LLM_HOST_URL = "http://localhost:8000"
 npm run dev
 ```
 
-Never put secrets in `VITE_*` variables because they are exposed to the browser bundle.
+Never put secrets in `VITE_*` variables because they are exposed to the browser bundle. The manual Vite topology talks directly to the local Spring read endpoints, so do not expose that Spring port to untrusted clients.
 
 ## Isolated acceptance runner
 
@@ -300,16 +324,17 @@ python acceptance_runner.py --only max_delivery_days --only pending_orders_listi
 
 ## Main REST surfaces
 
-The Spring Boot service provides inventory, incoming-order and marketplace REST APIs under `/api`.
+The Spring Boot service provides inventory, incoming-order and marketplace REST APIs under `/api`. In the normal Docker topology the browser sees them only through the read-only `/stock` gateway; MCP processes reach the full service on the internal Docker network.
 
-The LLM host provides endpoints including:
+The secured LLM host provides endpoints including:
 
-- `GET /api/health`
-- `POST /api/chat`
-- conversation listing/detail/deletion
-- conversation confirmation endpoints
+- `GET /api/health` (public),
+- `POST /api/session` (public session issuance),
+- `POST /api/chat` (Bearer session required),
+- conversation listing/detail/deletion (Bearer session required),
+- conversation confirmation endpoints (Bearer session required).
 
-The dashboard consumes both services.
+The dashboard consumes both services through the same-origin Nginx gateway.
 
 ## Web smoke checklist
 
@@ -318,12 +343,13 @@ After starting the complete stack:
 1. Open `http://localhost:5173` and verify dashboard KPIs load.
 2. Verify the inventory table and product filters.
 3. Open marketplace, draft and incoming-order views.
-4. Verify AI chat communicates with `http://localhost:8000`.
+4. Verify AI chat communicates through the `/llm` gateway and creates an anonymous bearer session.
 5. Ask: `Bekleyen siparişleri kontrol et ve teslim edilen ürünleri stoğa ekle.`
 6. Verify the first turn lists receivable orders without changing stock.
 7. Verify the trace includes listing tools but no receive tool before approval.
 8. Send `Onaylıyorum.` and verify only eligible delivered orders are received.
-9. Exercise delivery, rating and budget constraints and inspect the observable trace arguments.
+9. Verify the Drafts page does not offer a direct browser-side order mutation and routes finalization through AI Operations.
+10. Exercise delivery, rating and budget constraints and inspect the observable trace arguments.
 
 ## Quality checks
 
@@ -332,6 +358,13 @@ After starting the complete stack:
 ```bash
 python -m unittest discover -s llm-host -p 'test_*.py'
 python -m py_compile llm-host/*.py stock-mcp/*.py marketplace-mcp/*.py
+python llm-host/golden_eval.py
+```
+
+### Security smoke
+
+```bash
+python scripts/security_smoke.py
 ```
 
 ### Frontend
@@ -368,10 +401,11 @@ git status
 ## Environment and secrets
 
 - Local `.env` files are ignored.
-- Runtime SQLite conversation databases are ignored.
+- Runtime SQLite conversation and anonymous-session databases are ignored.
 - Generated acceptance reports are ignored.
 - `node_modules`, Vite output, coverage and common Python caches are ignored.
 - Server-side secrets must never be exposed through `VITE_*` variables.
+- Opaque browser bearer tokens are credentials even though they represent anonymous sessions.
 - The Docker Compose defaults are intended for local development only.
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for contribution and verification expectations.
