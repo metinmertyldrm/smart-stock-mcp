@@ -43,13 +43,16 @@ jobs:
         run: python -m pip check
 
       - name: Run unit tests
-        run: python -m unittest discover -s llm-host -p 'test_*.py'
+        run: |
+          python -m unittest discover -s llm-host -p 'test_*.py'
+          python -m unittest discover -s scripts -p 'test_*.py'
 
       - name: Compile Python modules
         run: |
           python -m py_compile llm-host/*.py
           python -m py_compile stock-mcp/*.py
           python -m py_compile marketplace-mcp/*.py
+          python -m py_compile scripts/smoke_stack.py
 
   frontend:
     name: Frontend lint, test and build
