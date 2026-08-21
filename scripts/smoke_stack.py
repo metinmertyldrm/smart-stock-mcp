@@ -12,7 +12,6 @@ import sys
 import time
 import urllib.error
 import urllib.request
-import uuid
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -124,6 +123,16 @@ def check_web(config: SmokeConfig) -> None:
     print(f"  [OK] Web UI health: {body.strip() or 'HTTP 200'}")
 
 
+def session_headers(config: SmokeConfig) -> dict[str, str]:
+    status, session = request_json(
+        "POST", f"{config.llm_url}/api/session", timeout=config.timeout
+    )
+    token = session.get("token") if isinstance(session, dict) else None
+    if status != 201 or not isinstance(token, str) or len(token) < 32:
+        raise SmokeFailure("LLM host did not issue a valid session token")
+    return {"Authorization": f"Bearer {token}"}
+
+
 def delete_conversation(config: SmokeConfig, conversation_id: str, headers: dict[str, str]) -> None:
     status, _ = request_json(
         "DELETE",
@@ -136,8 +145,7 @@ def delete_conversation(config: SmokeConfig, conversation_id: str, headers: dict
 
 
 def check_conversation_crud(config: SmokeConfig) -> None:
-    owner = f"smoke-{uuid.uuid4()}"
-    headers = {"X-Client-Id": owner}
+    headers = session_headers(config)
     status, created = request_json(
         "POST",
         f"{config.llm_url}/api/conversations",
@@ -176,12 +184,11 @@ def check_conversation_crud(config: SmokeConfig) -> None:
         raise
 
     delete_conversation(config, conversation_id, headers)
-    print("  [OK] Conversation persistence CRUD + owner scope")
+    print("  [OK] Conversation persistence CRUD + authenticated owner scope")
 
 
 def check_read_only_chat(config: SmokeConfig) -> None:
-    owner = f"smoke-chat-{uuid.uuid4()}"
-    headers = {"X-Client-Id": owner}
+    headers = session_headers(config)
     status, created = request_json(
         "POST",
         f"{config.llm_url}/api/conversations",
