@@ -13,6 +13,7 @@ class SmokeStackTests(unittest.TestCase):
             ollama_url="http://ollama",
             model="qwen3:8b",
             timeout=1.0,
+            chat_timeout=2.0,
             retries=2,
             retry_delay=0.0,
             chat=False,
@@ -26,6 +27,7 @@ class SmokeStackTests(unittest.TestCase):
             "--llm-url", "http://localhost:8000/",
             "--web-url", "http://localhost:5173/",
             "--ollama-url", "http://localhost:11434/",
+            "--chat-timeout", "42",
             "--retries", "3",
             "--retry-delay", "0",
         ])
@@ -33,6 +35,7 @@ class SmokeStackTests(unittest.TestCase):
         self.assertEqual("http://localhost:8000", config.llm_url)
         self.assertEqual("http://localhost:5173", config.web_url)
         self.assertEqual("http://localhost:11434", config.ollama_url)
+        self.assertEqual(42, config.chat_timeout)
         self.assertEqual(3, config.retries)
 
     def test_with_retries_retries_smoke_failures(self):
@@ -93,6 +96,25 @@ class SmokeStackTests(unittest.TestCase):
         with patch.object(smoke_stack, "request_json", side_effect=fake_request):
             with self.assertRaisesRegex(smoke_stack.SmokeFailure, "expected 204"):
                 smoke_stack.check_conversation_crud(self.config())
+
+    def test_read_only_chat_uses_chat_timeout(self):
+        calls = []
+
+        def fake_request(method, url, **kwargs):
+            calls.append((method, url, kwargs))
+            if method == "POST" and url.endswith("/api/conversations"):
+                return 201, {"id": "conv-2"}
+            if method == "POST" and url.endswith("/api/chat"):
+                return 200, {"succeeded": True, "permissionLevel": "PLAN", "trace": []}
+            if method == "DELETE":
+                return 204, None
+            raise AssertionError((method, url))
+
+        with patch.object(smoke_stack, "request_json", side_effect=fake_request):
+            smoke_stack.check_read_only_chat(self.config(chat_timeout=77.0))
+
+        chat_call = next(call for call in calls if call[1].endswith("/api/chat"))
+        self.assertEqual(77.0, chat_call[2]["timeout"])
 
     def test_read_only_chat_rejects_write_tools(self):
         def fake_request(method, url, **kwargs):
