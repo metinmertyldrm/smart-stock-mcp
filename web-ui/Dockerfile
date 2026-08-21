@@ -24,12 +24,12 @@ RUN --mount=type=cache,target=/root/.npm \
     set -eux; \
     node --version; \
     npm --version; \
-    if ! npm ci --include=dev; then \
+    npm ci --include=dev || { \
       status=$?; \
       echo "npm ci failed; recent npm debug log follows:"; \
       find /root/.npm/_logs -type f -name '*-debug-0.log' -print -exec tail -n 160 {} \; 2>/dev/null || true; \
       exit "$status"; \
-    fi; \
+    }; \
     test -x node_modules/.bin/tsc; \
     test -x node_modules/.bin/vite
 
