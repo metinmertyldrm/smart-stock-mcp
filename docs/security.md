@@ -26,11 +26,19 @@ The deployable LLM API entry point is `secure_api:app`.
 
 Only the SHA-256 digest of the bearer token is stored in the session SQLite database. The plaintext bearer credential is returned once to the client and is not persisted by the server.
 
-All LLM API routes except `/api/health` and `/api/session` require:
+The intentionally public LLM endpoints are:
+
+- `GET /api/health` for process liveness,
+- `GET /api/ready` for side-effect-free readiness checks,
+- `POST /api/session` for anonymous session issuance.
+
+All other LLM API routes, including `GET /api/metrics`, require:
 
 ```text
 Authorization: Bearer <opaque-token>
 ```
+
+Readiness exposes only coarse local component state and MCP server/tool counts; it does not expose credentials, conversation content, request bodies, or tool results. Operational metrics stay behind the Bearer boundary because they reveal request-volume and execution characteristics.
 
 A caller-supplied `X-Client-Id` is not trusted at the public boundary. `secure_api` strips it and injects the owner identifier resolved from the bearer session before handing the request to the internal `web_api` implementation.
 
@@ -103,7 +111,15 @@ Then run the normal full-stack smoke, optionally including the real read-only LL
 python scripts/smoke_stack.py --chat
 ```
 
-The normal smoke now reaches stock and LLM APIs through the same `/stock` and `/llm` gateway paths used by the Docker web application.
+The normal smoke reaches stock and LLM APIs through the same `/stock` and `/llm` gateway paths used by the Docker web application.
+
+TASK 08 adds a separate deterministic observability smoke for request IDs, readiness and authenticated metrics:
+
+```bash
+python scripts/observability_smoke.py
+```
+
+See [`observability.md`](observability.md) for the operational interpretation of those signals.
 
 ## 7. Manual development warning
 
