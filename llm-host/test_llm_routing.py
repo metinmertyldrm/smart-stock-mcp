@@ -1,6 +1,8 @@
+import json
 import unittest
+from unittest.mock import patch
 
-from llm import prepare_inference_messages
+from llm import LLMService, prepare_inference_messages
 
 
 FULL_SYSTEM = "Smart Stock & Procurement execution planner.\n" + ("x" * 12000)
@@ -28,6 +30,25 @@ class FastReadOnlyPlannerRoutingTest(unittest.TestCase):
 
         self.assertEqual("list_low_stock", tool)
         self.assertIn('"tool":"list_low_stock"', prepared[0]["content"])
+
+    def test_deterministic_fast_route_skips_ollama(self):
+        service = LLMService()
+        messages = [
+            {"role": "system", "content": FULL_SYSTEM},
+            {"role": "user", "content": "Stokta olmayan ürünleri listele."},
+        ]
+
+        with patch("llm.requests.post") as post:
+            raw = service.generate(messages)
+
+        post.assert_not_called()
+        plan = json.loads(raw)
+        self.assertEqual("execution_plan", plan["type"])
+        self.assertEqual("INFO", plan["goal"])
+        self.assertEqual(
+            [{"id": "step_1", "tool": "list_out_of_stock", "arguments": {}}],
+            plan["steps"],
+        )
 
     def test_procurement_request_keeps_full_planner(self):
         original = [
