@@ -1,16 +1,20 @@
-import httpx
+import os
 from typing import List, Optional
+
+import httpx
+
 from models import (
     MarketplaceSeller,
     MarketplaceOffer,
     MarketplaceComparisonResponse,
     MarketplacePurchaseDraftResponse,
-    MarketplaceOrderResponse
+    MarketplaceOrderResponse,
 )
 
+
 class MarketplaceService:
-    def __init__(self, base_url: str = "http://localhost:8081"):
-        self.base_url = base_url
+    def __init__(self, base_url: Optional[str] = None):
+        self.base_url = (base_url or os.getenv("STOCK_SERVICE_URL", "http://localhost:8081")).rstrip("/")
 
     async def list_sellers(self) -> List[MarketplaceSeller]:
         """Fetch all sellers from the marketplace API."""
@@ -40,7 +44,10 @@ class MarketplaceService:
     async def compare_offers(self, product_id: int) -> MarketplaceComparisonResponse:
         """Compare offers for a specific product ID using TOPSIS scoring."""
         async with httpx.AsyncClient() as client:
-            response = await client.get(f"{self.base_url}/api/marketplace/offers/compare", params={"productId": product_id})
+            response = await client.get(
+                f"{self.base_url}/api/marketplace/offers/compare",
+                params={"productId": product_id},
+            )
             response.raise_for_status()
             return MarketplaceComparisonResponse(**response.json())
 
@@ -48,24 +55,26 @@ class MarketplaceService:
         """Check if seller has enough stock for a given offer ID and quantity."""
         async with httpx.AsyncClient() as client:
             params = {"offerId": offer_id, "quantity": quantity}
-            response = await client.get(f"{self.base_url}/api/marketplace/check-availability", params=params)
+            response = await client.get(
+                f"{self.base_url}/api/marketplace/check-availability",
+                params=params,
+            )
             response.raise_for_status()
             return response.json()
 
     async def create_purchase_draft(self, items: List[dict]) -> MarketplacePurchaseDraftResponse:
         """Create a new purchase draft in the system."""
-        # Convert python style keys to match the Spring Boot DTO fields (offerId, quantity)
         payload_items = []
         for item in items:
             payload_items.append({
                 "offerId": item.get("offer_id") or item.get("offerId"),
-                "quantity": item["quantity"]
+                "quantity": item["quantity"],
             })
 
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 f"{self.base_url}/api/marketplace/drafts",
-                json={"items": payload_items}
+                json={"items": payload_items},
             )
             response.raise_for_status()
             return MarketplacePurchaseDraftResponse(**response.json())
@@ -75,7 +84,7 @@ class MarketplaceService:
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 f"{self.base_url}/api/marketplace/orders",
-                json={"draftId": draft_id}
+                json={"draftId": draft_id},
             )
             response.raise_for_status()
             return MarketplaceOrderResponse(**response.json())
