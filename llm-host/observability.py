@@ -18,7 +18,26 @@ from typing import Any
 
 SERVICE_NAME = "smart-stock-llm-host"
 _request_id: ContextVar[str | None] = ContextVar("smart_stock_request_id", default=None)
-logger = logging.getLogger("smart_stock.observability")
+
+
+def _configure_event_logger() -> logging.Logger:
+    """Keep structured INFO events visible regardless of Uvicorn/root logger config."""
+    event_logger = logging.getLogger("smart_stock.observability")
+    event_logger.setLevel(logging.INFO)
+
+    if not any(getattr(handler, "_smart_stock_observability", False) for handler in event_logger.handlers):
+        handler = logging.StreamHandler()
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        handler._smart_stock_observability = True  # type: ignore[attr-defined]
+        event_logger.addHandler(handler)
+
+    # The dedicated handler owns the event stream; do not duplicate through root.
+    event_logger.propagate = False
+    return event_logger
+
+
+logger = _configure_event_logger()
 
 
 def now_iso() -> str:
