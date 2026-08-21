@@ -78,6 +78,22 @@ class SmokeStackTests(unittest.TestCase):
         for _, _, kwargs in calls:
             self.assertTrue(kwargs["headers"]["X-Client-Id"].startswith("smoke-"))
 
+    def test_conversation_crud_fails_when_delete_fails(self):
+        def fake_request(method, url, **kwargs):
+            if method == "POST":
+                return 201, {"id": "conv-1"}
+            if method == "GET" and url.endswith("/conv-1"):
+                return 200, {"id": "conv-1"}
+            if method == "GET":
+                return 200, {"items": [{"id": "conv-1"}]}
+            if method == "DELETE":
+                return 500, {"detail": "cleanup failed"}
+            raise AssertionError((method, url))
+
+        with patch.object(smoke_stack, "request_json", side_effect=fake_request):
+            with self.assertRaisesRegex(smoke_stack.SmokeFailure, "expected 204"):
+                smoke_stack.check_conversation_crud(self.config())
+
     def test_read_only_chat_rejects_write_tools(self):
         def fake_request(method, url, **kwargs):
             if method == "POST" and url.endswith("/api/conversations"):
