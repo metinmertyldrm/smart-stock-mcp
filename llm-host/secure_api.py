@@ -34,7 +34,11 @@ def authenticated_headers(raw_headers: list[tuple[bytes, bytes]], owner_id: str)
 
 @app.post("/api/session", status_code=201)
 async def create_session():
-    return sessions.create()
+    return JSONResponse(
+        status_code=201,
+        content=sessions.create(),
+        headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+    )
 
 
 @app.middleware("http")
@@ -47,7 +51,7 @@ async def require_session(request: Request, call_next):
         return JSONResponse(
             status_code=401,
             content={"detail": "Geçerli bir oturum gerekli."},
-            headers={"WWW-Authenticate": "Bearer"},
+            headers={"WWW-Authenticate": "Bearer", "Cache-Control": "no-store"},
         )
     request.scope["headers"] = authenticated_headers(list(request.scope.get("headers", [])), owner_id)
     return await call_next(request)
