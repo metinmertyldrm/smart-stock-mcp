@@ -144,6 +144,19 @@
     }
   },
   {
+    "id": "cached_plans_compare_via_reason",
+    "tags": ["reasoning", "context"],
+    "user": "En ucuz ve en hızlı planı karşılaştır.",
+    "route": {"mode": "full"},
+    "acceptance_scenario": "compare_cheapest_fastest",
+    "plan": {
+      "type": "execution_plan",
+      "goal": "REASON",
+      "context_sources": ["last_cheapest_plan", "last_fastest_plan"],
+      "steps": []
+    }
+  },
+  {
     "id": "draft_does_not_place_order",
     "tags": ["write-boundary", "draft"],
     "user": "Elektronik kategorisindeki kritik ürünleri yalnızca puanı 4.5 üzerindeki satıcılardan taslak siparişe dönüştür.",
