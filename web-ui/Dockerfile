@@ -1,16 +1,37 @@
-FROM node:20-bookworm-slim AS build
+# syntax=docker/dockerfile:1.7
+FROM node:20.19.5-bookworm-slim AS build
 WORKDIR /app
 
 COPY package.json package-lock.json ./
-# Building the production bundle requires devDependencies such as TypeScript
-# and Vite. Use the Debian-based Node image for a more stable npm install on
-# Docker Desktop and explicitly verify the expected build executables exist.
-ENV NODE_ENV=development
-RUN node --version \
-    && npm --version \
-    && npm ci --include=dev \
-    && test -x node_modules/.bin/tsc \
-    && test -x node_modules/.bin/vite
+
+# Frontend compilation needs devDependencies such as TypeScript and Vite.
+# Docker Desktop connections can be slow/unstable on the first dependency
+# download, so use bounded npm retries/timeouts and persist the npm download
+# cache across BuildKit builds. If npm still fails, print its debug log so the
+# underlying network/package error is visible instead of only the generic
+# "Exit handler never called" message.
+ENV NODE_ENV=development \
+    NPM_CONFIG_AUDIT=false \
+    NPM_CONFIG_FUND=false \
+    NPM_CONFIG_FETCH_RETRIES=6 \
+    NPM_CONFIG_FETCH_RETRY_FACTOR=2 \
+    NPM_CONFIG_FETCH_RETRY_MINTIMEOUT=20000 \
+    NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=180000 \
+    NPM_CONFIG_FETCH_TIMEOUT=600000 \
+    NPM_CONFIG_MAXSOCKETS=5
+
+RUN --mount=type=cache,target=/root/.npm \
+    set -eux; \
+    node --version; \
+    npm --version; \
+    if ! npm ci --include=dev; then \
+      status=$?; \
+      echo "npm ci failed; recent npm debug log follows:"; \
+      find /root/.npm/_logs -type f -name '*-debug-0.log' -print -exec tail -n 160 {} \; 2>/dev/null || true; \
+      exit "$status"; \
+    fi; \
+    test -x node_modules/.bin/tsc; \
+    test -x node_modules/.bin/vite
 
 COPY . .
 
