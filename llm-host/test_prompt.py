@@ -25,6 +25,32 @@ class ExecutionPlanPromptTest(unittest.TestCase):
             prompt,
         )
 
+    def test_prompt_budget_stays_bounded_and_safety_rules_remain(self):
+        tools = [
+            SimpleNamespace(
+                name=f"tool_{index}",
+                description="x" * 1000,
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "limit": {"type": "integer", "minimum": 1},
+                    },
+                },
+            )
+            for index in range(20)
+        ]
+
+        prompt = get_execution_plan_prompt(tools)
+
+        self.assertLess(len(prompt), 16000)
+        self.assertNotIn("x" * 200, prompt)
+        self.assertIn("INFO and REASON are read-only", prompt)
+        self.assertIn("PENDING_DRAFT_ID", prompt)
+        self.assertIn("PENDING_RECEIVE_IDS", prompt)
+        self.assertIn("create_incoming_orders", prompt)
+        self.assertIn("Never emit `final_response`", prompt)
+
 
 class DecisionJournalPromptTest(unittest.TestCase):
     def test_prompt_targets_non_technical_readers_and_forbids_raw_json(self):
