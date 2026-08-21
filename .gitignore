@@ -1,15 +1,14 @@
 # ==========================================
-# 1. HASSAS BİLGİLER & VERİTABANI GÜVENLİĞİ
+# 1. HASSAS BILGILER & VERITABANI GUVENLIGI
 # ==========================================
-# Ortam Değişkenleri
+# Ortam degiskenleri
 .env
 *.env
 .env.*
 !.env.example
 !**/.env.example
 
-# PostgreSQL & Spring Boot Hassas Ayarlar
-# (Hassas şifre içeren ayar dosyalarını engeller)
+# PostgreSQL & Spring Boot hassas yerel ayarlar
 application-local.properties
 application-local.yml
 application-dev.properties
@@ -20,14 +19,11 @@ secrets.yml
 # ==========================================
 # 2. SPRING BOOT / JAVA / MAVEN
 # ==========================================
-# Derlenmiş Kodlar ve Paketler
 target/
 *.class
 *.jar
 *.war
 *.ear
-
-# Maven Geçici Dosyaları
 .m2/
 .mvn/
 mvnw
@@ -36,21 +32,35 @@ mvnw.cmd
 # ==========================================
 # 3. PYTHON / LLM HOST / MCP
 # ==========================================
-# Sanal Ortamlar (Virtual Environments)
 venv/
 .venv/
 env/
 ENV/
-
-# Önbellek ve Derleme Dosyaları
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
 # ==========================================
-# 4. İDE & EDİTÖR AYARLARI
+# 4. NODE / REACT / VITE
+# ==========================================
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+coverage/
+**/coverage/
+.vite/
+**/.vite/
+*.tsbuildinfo
+
+# ==========================================
+# 5. IDE & EDITOR AYARLARI
 # ==========================================
 .vscode/
 .idea/
@@ -59,16 +69,17 @@ __pycache__/
 *.ipr
 
 # ==========================================
-# 5. İŞLETİM SİSTEMİ & LOG DOSYALARI
+# 6. ISLETIM SISTEMI & LOGLAR
 # ==========================================
-# PostgreSQL ve Sistem Logları
 *.log
 logs/
-
-# İşletim Sistemi Artıkları
 .DS_Store
 Thumbs.db
 
-# Runtime artefaktlari (calisma aninda uretilir, repoya girmemeli)
+# ==========================================
+# 7. RUNTIME / URETILEN TEST CIKTILARI
+# ==========================================
 llm-host/conversations.db
 llm-host/*.db
+llm-host/acceptance-results-*.json
+llm-host/rapor.json
