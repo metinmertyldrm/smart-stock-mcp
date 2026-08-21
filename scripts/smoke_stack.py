@@ -12,7 +12,6 @@ import sys
 import time
 import urllib.error
 import urllib.request
-import uuid
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -96,7 +95,7 @@ def check_stock(config: SmokeConfig) -> None:
     status, products = request_json("GET", f"{config.stock_url}/api/products", timeout=config.timeout)
     if status != 200 or not isinstance(products, list):
         raise SmokeFailure("Stock service /api/products did not return a JSON list")
-    print(f"  [OK] Stock service: {len(products)} products visible")
+    print(f"  [OK] Stock service (read-only gateway): {len(products)} products visible")
 
 
 def check_ollama(config: SmokeConfig) -> None:
@@ -114,7 +113,7 @@ def check_llm_health(config: SmokeConfig) -> None:
     status, result = request_json("GET", f"{config.llm_url}/api/health", timeout=config.timeout)
     if status != 200 or not isinstance(result, dict) or result.get("status") != "ok":
         raise SmokeFailure("LLM host health endpoint did not report status=ok")
-    print("  [OK] LLM host health")
+    print("  [OK] LLM host health through web gateway")
 
 
 def check_web(config: SmokeConfig) -> None:
@@ -122,6 +121,14 @@ def check_web(config: SmokeConfig) -> None:
     if status != 200:
         raise SmokeFailure(f"Web UI health endpoint returned HTTP {status}")
     print(f"  [OK] Web UI health: {body.strip() or 'HTTP 200'}")
+
+
+def session_headers(config: SmokeConfig) -> dict[str, str]:
+    status, session = request_json("POST", f"{config.llm_url}/api/session", timeout=config.timeout)
+    token = session.get("token") if isinstance(session, dict) else None
+    if status != 201 or not isinstance(token, str) or len(token) < 32:
+        raise SmokeFailure("LLM host did not issue a valid session token")
+    return {"Authorization": f"Bearer {token}"}
 
 
 def delete_conversation(config: SmokeConfig, conversation_id: str, headers: dict[str, str]) -> None:
@@ -136,8 +143,7 @@ def delete_conversation(config: SmokeConfig, conversation_id: str, headers: dict
 
 
 def check_conversation_crud(config: SmokeConfig) -> None:
-    owner = f"smoke-{uuid.uuid4()}"
-    headers = {"X-Client-Id": owner}
+    headers = session_headers(config)
     status, created = request_json(
         "POST",
         f"{config.llm_url}/api/conversations",
@@ -176,12 +182,11 @@ def check_conversation_crud(config: SmokeConfig) -> None:
         raise
 
     delete_conversation(config, conversation_id, headers)
-    print("  [OK] Conversation persistence CRUD + owner scope")
+    print("  [OK] Conversation persistence CRUD + authenticated owner scope")
 
 
 def check_read_only_chat(config: SmokeConfig) -> None:
-    owner = f"smoke-chat-{uuid.uuid4()}"
-    headers = {"X-Client-Id": owner}
+    headers = session_headers(config)
     status, created = request_json(
         "POST",
         f"{config.llm_url}/api/conversations",
@@ -221,8 +226,8 @@ def check_read_only_chat(config: SmokeConfig) -> None:
 
 def parse_args(argv: list[str] | None = None) -> SmokeConfig:
     parser = argparse.ArgumentParser(description="Verify the running Smart Stock Docker stack")
-    parser.add_argument("--stock-url", default=os.getenv("SMOKE_STOCK_URL", "http://localhost:8081"))
-    parser.add_argument("--llm-url", default=os.getenv("SMOKE_LLM_URL", "http://localhost:8000"))
+    parser.add_argument("--stock-url", default=os.getenv("SMOKE_STOCK_URL", "http://localhost:5173/stock"))
+    parser.add_argument("--llm-url", default=os.getenv("SMOKE_LLM_URL", "http://localhost:5173/llm"))
     parser.add_argument("--web-url", default=os.getenv("SMOKE_WEB_URL", "http://localhost:5173"))
     parser.add_argument("--ollama-url", default=os.getenv("SMOKE_OLLAMA_URL", "http://localhost:11434"))
     parser.add_argument("--model", default=os.getenv("OLLAMA_MODEL", "qwen3:8b"))

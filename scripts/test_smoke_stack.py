@@ -4,11 +4,14 @@ from unittest.mock import patch
 import smoke_stack
 
 
+TOKEN = "t" * 48
+
+
 class SmokeStackTests(unittest.TestCase):
     def config(self, **overrides):
         values = dict(
-            stock_url="http://stock",
-            llm_url="http://llm",
+            stock_url="http://web/stock",
+            llm_url="http://web/llm",
             web_url="http://web",
             ollama_url="http://ollama",
             model="qwen3:8b",
@@ -23,16 +26,16 @@ class SmokeStackTests(unittest.TestCase):
 
     def test_parse_args_strips_trailing_slashes(self):
         config = smoke_stack.parse_args([
-            "--stock-url", "http://localhost:8081/",
-            "--llm-url", "http://localhost:8000/",
+            "--stock-url", "http://localhost:5173/stock/",
+            "--llm-url", "http://localhost:5173/llm/",
             "--web-url", "http://localhost:5173/",
             "--ollama-url", "http://localhost:11434/",
             "--chat-timeout", "42",
             "--retries", "3",
             "--retry-delay", "0",
         ])
-        self.assertEqual("http://localhost:8081", config.stock_url)
-        self.assertEqual("http://localhost:8000", config.llm_url)
+        self.assertEqual("http://localhost:5173/stock", config.stock_url)
+        self.assertEqual("http://localhost:5173/llm", config.llm_url)
         self.assertEqual("http://localhost:5173", config.web_url)
         self.assertEqual("http://localhost:11434", config.ollama_url)
         self.assertEqual(42, config.chat_timeout)
@@ -58,11 +61,19 @@ class SmokeStackTests(unittest.TestCase):
             with self.assertRaisesRegex(smoke_stack.SmokeFailure, "not installed"):
                 smoke_stack.check_ollama(self.config())
 
+    def test_session_headers_require_server_issued_token(self):
+        with patch.object(smoke_stack, "request_json", return_value=(201, {"token": TOKEN})) as request:
+            headers = smoke_stack.session_headers(self.config())
+        self.assertEqual({"Authorization": f"Bearer {TOKEN}"}, headers)
+        self.assertTrue(request.call_args.args[1].endswith("/api/session"))
+
     def test_conversation_crud_creates_reads_lists_and_deletes(self):
         calls = []
 
         def fake_request(method, url, **kwargs):
             calls.append((method, url, kwargs))
+            if method == "POST" and url.endswith("/api/session"):
+                return 201, {"token": TOKEN}
             if method == "POST":
                 return 201, {"id": "conv-1"}
             if method == "GET" and url.endswith("/conv-1"):
@@ -77,12 +88,16 @@ class SmokeStackTests(unittest.TestCase):
             smoke_stack.check_conversation_crud(self.config())
 
         methods = [method for method, _, _ in calls]
-        self.assertEqual(["POST", "GET", "GET", "DELETE"], methods)
-        for _, _, kwargs in calls:
-            self.assertTrue(kwargs["headers"]["X-Client-Id"].startswith("smoke-"))
+        self.assertEqual(["POST", "POST", "GET", "GET", "DELETE"], methods)
+        protected_calls = [call for call in calls if not call[1].endswith("/api/session")]
+        for _, _, kwargs in protected_calls:
+            self.assertEqual(f"Bearer {TOKEN}", kwargs["headers"]["Authorization"])
+            self.assertNotIn("X-Client-Id", kwargs["headers"])
 
     def test_conversation_crud_fails_when_delete_fails(self):
         def fake_request(method, url, **kwargs):
+            if method == "POST" and url.endswith("/api/session"):
+                return 201, {"token": TOKEN}
             if method == "POST":
                 return 201, {"id": "conv-1"}
             if method == "GET" and url.endswith("/conv-1"):
@@ -102,6 +117,8 @@ class SmokeStackTests(unittest.TestCase):
 
         def fake_request(method, url, **kwargs):
             calls.append((method, url, kwargs))
+            if method == "POST" and url.endswith("/api/session"):
+                return 201, {"token": TOKEN}
             if method == "POST" and url.endswith("/api/conversations"):
                 return 201, {"id": "conv-2"}
             if method == "POST" and url.endswith("/api/chat"):
@@ -115,9 +132,12 @@ class SmokeStackTests(unittest.TestCase):
 
         chat_call = next(call for call in calls if call[1].endswith("/api/chat"))
         self.assertEqual(77.0, chat_call[2]["timeout"])
+        self.assertEqual(f"Bearer {TOKEN}", chat_call[2]["headers"]["Authorization"])
 
     def test_read_only_chat_rejects_write_tools(self):
         def fake_request(method, url, **kwargs):
+            if method == "POST" and url.endswith("/api/session"):
+                return 201, {"token": TOKEN}
             if method == "POST" and url.endswith("/api/conversations"):
                 return 201, {"id": "conv-2"}
             if method == "POST" and url.endswith("/api/chat"):
