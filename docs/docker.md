@@ -6,12 +6,14 @@ The Docker stack preserves the existing architecture. The Stock MCP and Marketpl
 
 | Compose service | Purpose | Default host port |
 | --- | --- | ---: |
-| `postgres` | PostgreSQL 17 development database | 5432 |
+| `postgres` | PostgreSQL 17 development database | 5433 |
 | `stock-service` | Spring Boot inventory/procurement API | 8081 |
 | `ollama` | Local LLM runtime | 11434 |
 | `ollama-model` | One-shot model pull/verification job | none |
 | `llm-host` | FastAPI orchestrator + stdio MCP processes | 8000 |
 | `web-ui` | Production Vite build served by nginx | 5173 |
+
+The PostgreSQL container deliberately maps its internal port `5432` to host port `5433` by default so it can coexist with a normal local PostgreSQL installation on `5432`. Container-to-container traffic always uses `postgres:5432`.
 
 An optional `acceptance` profile adds `acceptance-db-init` and `stock-service-acceptance` on port 8082, backed by the separate `smart_stock_acceptance` database.
 
@@ -37,6 +39,7 @@ When all health checks are green:
 - Stock API: `http://localhost:8081`
 - LLM host health: `http://localhost:8000/api/health`
 - Ollama: `http://localhost:11434`
+- Docker PostgreSQL from the host: `localhost:5433`
 
 Run in the background with:
 
@@ -137,7 +140,7 @@ For write scenarios, keep using the repository's guarded reset command. It refus
 ```powershell
 cd llm-host
 $env:STOCK_SERVICE_URL = "http://localhost:8082"
-$env:DB_URL = "jdbc:postgresql://localhost:5432/smart_stock_acceptance"
+$env:DB_URL = "jdbc:postgresql://localhost:5433/smart_stock_acceptance"
 $env:DB_USERNAME = "postgres"
 $env:PGPASSWORD = "postgres"
 python acceptance_runner.py `
