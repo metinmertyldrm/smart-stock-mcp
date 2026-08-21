@@ -7,6 +7,7 @@ request correlation plus process-local operational metrics.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -14,9 +15,10 @@ import uuid
 
 from fastapi import Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from observability import (
+    correlate_response_payload,
     emit_event,
     metrics,
     normalize_route,
@@ -29,6 +31,7 @@ from web_api import app
 
 
 PUBLIC_PATHS = {"/api/health", "/api/ready", "/api/session"}
+CHAT_ROUTES = {"/api/chat", "/api/conversations/{conversation_id}/confirm"}
 sessions = SessionStore()
 
 
@@ -41,6 +44,43 @@ def authenticated_headers(raw_headers: list[tuple[bytes, bytes]], owner_id: str)
     ]
     filtered.append((b"x-client-id", owner_id.encode("utf-8")))
     return filtered
+
+
+async def correlate_chat_response(response, request_id: str):
+    """Attach HTTP correlation to JSON chat telemetry and aggregate its trace."""
+    content_type = response.headers.get("content-type", "")
+    if "application/json" not in content_type.casefold() or not hasattr(response, "body_iterator"):
+        return response
+
+    chunks = []
+    async for chunk in response.body_iterator:
+        chunks.append(chunk.encode("utf-8") if isinstance(chunk, str) else bytes(chunk))
+    raw_body = b"".join(chunks)
+
+    headers = dict(response.headers)
+    headers.pop("content-length", None)
+    headers.pop("content-type", None)
+    background = getattr(response, "background", None)
+
+    try:
+        payload = json.loads(raw_body)
+    except (TypeError, ValueError, UnicodeDecodeError):
+        return Response(
+            content=raw_body,
+            status_code=response.status_code,
+            headers=headers,
+            media_type="application/json",
+            background=background,
+        )
+
+    correlate_response_payload(payload, request_id)
+    metrics.record_chat_response(payload)
+    return JSONResponse(
+        status_code=response.status_code,
+        content=payload,
+        headers=headers,
+        background=background,
+    )
 
 
 @app.post("/api/session", status_code=201)
@@ -99,6 +139,8 @@ async def observe_request(request: Request, call_next):
     try:
         response = await call_next(request)
         status_code = response.status_code
+        if route in CHAT_ROUTES and status_code < 500:
+            response = await correlate_chat_response(response, request_id)
         response.headers["X-Request-Id"] = request_id
         return response
     except Exception as exc:
