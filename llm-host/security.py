@@ -137,6 +137,9 @@ class SessionStore:
                 raise SessionError("Unknown session")
             if is_expired(row["expires_at"], now=current):
                 db.execute("DELETE FROM sessions WHERE token_hash=?", (digest,))
+                # Raising inside sqlite's context manager would roll this delete
+                # back, so persist cleanup before returning the auth failure.
+                db.commit()
                 raise SessionError("Session expired")
             db.execute(
                 "UPDATE sessions SET last_seen_at=? WHERE token_hash=?",
