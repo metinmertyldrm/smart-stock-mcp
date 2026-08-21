@@ -1,10 +1,14 @@
-import httpx
+import os
 from typing import List, Optional, Union
+
+import httpx
+
 from models import Product, Replenishment, IncomingOrder
 
+
 class ProductService:
-    def __init__(self, base_url: str = "http://localhost:8081"):
-        self.base_url = base_url
+    def __init__(self, base_url: Optional[str] = None):
+        self.base_url = (base_url or os.getenv("STOCK_SERVICE_URL", "http://localhost:8081")).rstrip("/")
 
     async def get_all_products(self) -> List[Product]:
         """Fetch all products from the Spring Boot API."""
@@ -58,7 +62,7 @@ class ProductService:
             normalized = self._normalize_expected(expected_delivery_date)
             if normalized:
                 payload["expectedDeliveryDate"] = normalized
-            
+
             response = await client.post(f"{self.base_url}/api/orders", json=payload)
             response.raise_for_status()
             return IncomingOrder(**response.json())

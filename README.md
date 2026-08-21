@@ -14,6 +14,8 @@ The repository contains five main components:
 
 The LLM proposes execution plans, but business rules and write-safety controls remain enforced outside the model. Purchase finalization and inventory receiving flows preserve explicit confirmation requirements.
 
+The MCP servers continue to communicate with `llm-host` over stdio both locally and in Docker. Containerization does not change MCP transport or tool behavior.
+
 ## Key features
 
 - Natural-language stock and procurement operations in Turkish or English.
@@ -27,8 +29,66 @@ The LLM proposes execution plans, but business rules and write-safety controls r
 - Observable execution plan, MCP trace, telemetry and user-facing decision journal.
 - Isolated acceptance database tooling for repeatable write scenarios.
 - React/Vite operations dashboard.
+- Docker Compose stack for the complete application.
 
-## Requirements
+## Clone
+
+```bash
+git clone https://github.com/metinmertyldrm/smart-stock-mcp.git
+cd smart-stock-mcp
+```
+
+## Docker quick start
+
+Docker Compose is the simplest way to start the complete stack. Docker Desktop or Docker Engine with Compose v2 is required.
+
+Optionally copy the default environment template:
+
+```bash
+cp .env.example .env
+```
+
+Build and start everything:
+
+```bash
+docker compose up --build
+```
+
+The stack starts:
+
+| Service | Default host port |
+| --- | ---: |
+| PostgreSQL | 5433 |
+| Spring Boot stock service | 8081 |
+| Ollama | 11434 |
+| LLM host HTTP API | 8000 |
+| nginx web UI | 5173 |
+
+Docker PostgreSQL uses host port `5433` by default to avoid colliding with a normal local PostgreSQL installation on `5432`. Inside the Compose network, Spring still connects to `postgres:5432`.
+
+The first startup can take several minutes because the model bootstrap job downloads `qwen3:8b` into a persistent Ollama volume.
+
+When the services are healthy, open:
+
+```text
+http://localhost:5173
+```
+
+Useful commands:
+
+```bash
+docker compose ps
+docker compose logs -f llm-host
+docker compose down
+```
+
+Named volumes preserve PostgreSQL data, downloaded Ollama models and conversation history between restarts.
+
+For detailed Docker configuration, service networking, acceptance profiles, data-reset behavior and rebuild commands, see [`docs/docker.md`](docs/docker.md).
+
+## Manual development requirements
+
+Docker is not required. For the manual local workflow install:
 
 - Java 21
 - Maven 3.9+
@@ -40,14 +100,7 @@ The LLM proposes execution plans, but business rules and write-safety controls r
 
 The default LLM model is `qwen3:8b`.
 
-## Clone
-
-```bash
-git clone https://github.com/metinmertyldrm/smart-stock-mcp.git
-cd smart-stock-mcp
-```
-
-## Install dependencies
+## Install dependencies manually
 
 ### Python
 
@@ -63,7 +116,7 @@ npm ci
 cd ..
 ```
 
-## PostgreSQL
+## Manual PostgreSQL setup
 
 Create the normal development database once:
 
@@ -82,17 +135,7 @@ $env:SERVER_PORT = "8081"
 
 The normal profile defaults to non-destructive schema updates. Do not use `DB_DDL_AUTO=create` for daily development unless you intentionally want a reset.
 
-## Run the development stack
-
-The normal local topology uses:
-
-| Service | Default port |
-| --- | ---: |
-| PostgreSQL | 5432 |
-| Spring Boot stock service | 8081 |
-| Ollama | 11434 |
-| LLM host HTTP API | 8000 |
-| Vite web UI | 5173 |
+## Run the development stack manually
 
 ### 1. Spring Boot backend
 
@@ -150,13 +193,15 @@ Never put secrets in `VITE_*` variables because they are exposed to the browser 
 
 Acceptance scenarios that change state must run against a dedicated database rather than the normal development database.
 
-Create once:
+With Docker, start the normal stack plus the isolated acceptance Spring service:
 
-```text
-smart_stock_acceptance
+```bash
+docker compose --profile acceptance up --build -d
 ```
 
-Start a second Spring process:
+This creates `smart_stock_acceptance` if necessary and exposes the acceptance Spring service on port 8082. The normal `smart_stock` database remains separate. When the acceptance reset script is run from the host against Docker PostgreSQL, use host port `5433` unless `POSTGRES_PORT` was changed.
+
+For a fully manual setup, create `smart_stock_acceptance` once and start a second Spring process:
 
 ```powershell
 $env:SPRING_PROFILES_ACTIVE = "acceptance"
@@ -171,7 +216,7 @@ mvn spring-boot:run
 
 The reset wrapper derives the target from the same `DB_URL` and refuses database names that do not end in `_acceptance`.
 
-Example repeatable write scenario:
+Example repeatable write scenario for the manual topology:
 
 ```powershell
 cd llm-host
@@ -184,6 +229,8 @@ python acceptance_runner.py `
   --runs 3 `
   --reset-command 'powershell -NoProfile -File "..\stock-service\scripts\reset-acceptance.ps1"'
 ```
+
+For the equivalent Docker acceptance reset command and port mapping, see [`docs/docker.md`](docs/docker.md).
 
 Multiple read-only scenarios can be selected without a reset command:
 
@@ -244,7 +291,9 @@ After starting the complete stack:
 
 ```bash
 python -m unittest discover -s llm-host -p 'test_*.py'
-python -m py_compile llm-host/*.py
+python -m unittest discover -s stock-mcp -p 'test_*.py'
+python -m unittest discover -s marketplace-mcp -p 'test_*.py'
+python -m py_compile llm-host/*.py stock-mcp/*.py marketplace-mcp/*.py
 ```
 
 ### Frontend
@@ -264,6 +313,13 @@ cd stock-service
 mvn test
 ```
 
+### Docker Compose
+
+```bash
+docker compose config
+docker compose --profile acceptance config
+```
+
 ### Repository hygiene
 
 ```bash
@@ -277,7 +333,9 @@ git status
 - Runtime SQLite conversation databases are ignored.
 - Generated acceptance reports are ignored.
 - `node_modules`, Vite output, coverage and common Python caches are ignored.
-- Keep public service locations in example configuration only. Never commit passwords, tokens or API keys.
+- Root `.env.example` contains Docker Compose examples only, not production credentials.
+- `VITE_*` variables are public browser configuration and must never contain secrets.
+- Keep passwords, tokens and API keys out of the repository.
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for contribution and verification expectations.
 
