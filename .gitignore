@@ -16,6 +16,10 @@ application-dev.yml
 secrets.properties
 secrets.yml
 
+# Local Docker build CA certificates (host-specific, never commit)
+web-ui/.docker-certs/*
+!web-ui/.docker-certs/.gitkeep
+
 # ==========================================
 # 2. SPRING BOOT / JAVA / MAVEN
 # ==========================================
