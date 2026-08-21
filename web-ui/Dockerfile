@@ -2,7 +2,11 @@ FROM node:20-alpine AS build
 WORKDIR /app
 
 COPY package.json package-lock.json ./
-RUN npm ci
+# The production image needs a production bundle, but building that bundle
+# requires devDependencies such as TypeScript and Vite. Explicitly include
+# them so local npm/Docker configuration cannot omit `tsc` or `vite`.
+ENV NODE_ENV=development
+RUN npm ci --include=dev
 
 COPY . .
 
