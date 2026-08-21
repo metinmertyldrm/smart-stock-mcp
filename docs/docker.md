@@ -13,7 +13,7 @@ The Docker stack preserves the existing architecture. The Stock MCP and Marketpl
 | `llm-host` | FastAPI orchestrator + stdio MCP processes | 8000 |
 | `web-ui` | Production Vite build served by nginx | 5173 |
 
-The PostgreSQL container deliberately maps its internal port `5432` to host port `5433` by default so it can coexist with a normal local PostgreSQL installation on `5432`. Container-to-container traffic always uses `postgres:5432`.
+Mapped ports bind to `127.0.0.1` by default through `BIND_HOST`, so PostgreSQL, Ollama and the application APIs are not unintentionally exposed to other devices on the network. The PostgreSQL container deliberately maps its internal port `5432` to host port `5433` by default so it can coexist with a normal local PostgreSQL installation on `5432`. Container-to-container traffic always uses `postgres:5432`.
 
 An optional `acceptance` profile adds `acceptance-db-init` and `stock-service-acceptance` on port 8082, backed by the separate `smart_stock_acceptance` database.
 
@@ -84,6 +84,7 @@ docker compose down -v
 
 The root `.env.example` documents supported Compose variables. Important values include:
 
+- `BIND_HOST`
 - `DB_USERNAME` / `DB_PASSWORD`
 - `POSTGRES_PORT`
 - `STOCK_SERVICE_PORT`
@@ -97,6 +98,8 @@ The root `.env.example` documents supported Compose variables. Important values 
 - `LLM_CORS_ALLOWED_ORIGINS`
 - `VITE_API_BASE_URL`
 - `VITE_LLM_HOST_URL`
+
+Keep `BIND_HOST=127.0.0.1` for normal local development. If you intentionally set `BIND_HOST=0.0.0.0` for LAN or remote access, also set browser-facing `VITE_*` URLs and both CORS origin variables to the actual public hostname/IP. Rebuild `web-ui` after changing `VITE_*` values.
 
 `VITE_*` values are public browser configuration, not secrets. They are compiled into the frontend bundle while the `web-ui` image is built. If you change the public hostname or mapped backend ports, update the `VITE_*` values and rebuild the frontend image:
 
