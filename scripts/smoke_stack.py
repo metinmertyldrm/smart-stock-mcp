@@ -227,7 +227,7 @@ def parse_args(argv: list[str] | None = None) -> SmokeConfig:
     parser.add_argument("--ollama-url", default=os.getenv("SMOKE_OLLAMA_URL", "http://localhost:11434"))
     parser.add_argument("--model", default=os.getenv("OLLAMA_MODEL", "qwen3:8b"))
     parser.add_argument("--timeout", type=float, default=10.0)
-    parser.add_argument("--chat-timeout", type=float, default=float(os.getenv("SMOKE_CHAT_TIMEOUT", "630")))
+    parser.add_argument("--chat-timeout", type=float, default=float(os.getenv("SMOKE_CHAT_TIMEOUT", "330")))
     parser.add_argument("--retries", type=int, default=12)
     parser.add_argument("--retry-delay", type=float, default=5.0)
     parser.add_argument("--chat", action="store_true", help="also run one real read-only LLM + MCP turn")
@@ -268,9 +268,8 @@ def main(argv: list[str] | None = None) -> int:
         for label, check in checks:
             with_retries(label, check, config.retries, config.retry_delay)
         if config.chat:
-            # The host may need several minutes for CPU-only inference. Chat is
-            # intentionally attempted once so a client timeout cannot overlap a
-            # still-running server-side generation.
+            # Chat is intentionally attempted once so a client timeout cannot overlap
+            # a still-running server-side generation on a slow local machine.
             with_retries("Read-only LLM chat", lambda: check_read_only_chat(config), 1, config.retry_delay)
     except SmokeFailure as exc:
         print(f"\n[FAIL] {exc}", file=sys.stderr)
