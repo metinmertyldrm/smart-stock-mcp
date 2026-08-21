@@ -1,0 +1,255 @@
+[
+  {
+    "id": "fast_out_of_stock_listing",
+    "tags": ["fast-route", "read-only"],
+    "user": "Stokta olmayan ürünleri listele.",
+    "route": {"mode": "fast", "tool": "list_out_of_stock"},
+    "plan": {
+      "type": "execution_plan",
+      "goal": "INFO",
+      "steps": [
+        {"id": "step_1", "tool": "list_out_of_stock", "arguments": {}}
+      ]
+    },
+    "expect": {
+      "goals": ["INFO"],
+      "tools_required": ["list_out_of_stock"],
+      "tools_forbidden": ["create_procurement_plan", "create_purchase_draft", "place_order", "receive_orders"]
+    }
+  },
+  {
+    "id": "fast_low_stock_listing",
+    "tags": ["fast-route", "read-only"],
+    "user": "Kritik stoktaki ürünleri göster.",
+    "route": {"mode": "fast", "tool": "list_low_stock"},
+    "plan": {
+      "type": "execution_plan",
+      "goal": "INFO",
+      "steps": [
+        {"id": "step_1", "tool": "list_low_stock", "arguments": {}}
+      ]
+    },
+    "expect": {
+      "goals": ["INFO"],
+      "tools_required": ["list_low_stock"],
+      "tools_forbidden": ["create_procurement_plan", "create_purchase_draft", "place_order", "receive_orders"]
+    }
+  },
+  {
+    "id": "procurement_request_never_fast_routes",
+    "tags": ["route-guard", "plan"],
+    "user": "Stokta olmayan ürünler için satın alma planı hazırla.",
+    "route": {"mode": "full"},
+    "acceptance_scenario": "plan_out_of_stock",
+    "plan": {
+      "type": "execution_plan",
+      "goal": "PLAN",
+      "steps": [
+        {"id": "step_1", "tool": "list_out_of_stock", "arguments": {}},
+        {
+          "id": "step_2",
+          "tool": "create_procurement_plan",
+          "arguments": {
+            "items": {"$from": "step_1.products", "$transform": "out_of_stock_products_to_items"},
+            "objective": "CHEAPEST"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "id": "quantity_reasoning_never_fast_routes",
+    "tags": ["route-guard", "reasoning"],
+    "user": "Kritik ürünlerden kaç tane sipariş etmeliyim?",
+    "route": {"mode": "full"},
+    "plan": {
+      "type": "execution_plan",
+      "goal": "INFO",
+      "steps": [
+        {"id": "step_1", "tool": "calculate_replenishment", "arguments": {}}
+      ]
+    },
+    "expect": {
+      "goals": ["INFO"],
+      "tools_required": ["calculate_replenishment"],
+      "tools_forbidden": ["create_purchase_draft", "place_order", "receive_orders"]
+    }
+  },
+  {
+    "id": "budget_maps_to_total_budget",
+    "tags": ["argument-mapping", "plan"],
+    "user": "Toplam bütçe 50.000 TL'yi geçmeyecek şekilde eksik ürünleri tamamla.",
+    "route": {"mode": "full"},
+    "acceptance_scenario": "total_budget_limit",
+    "plan": {
+      "type": "execution_plan",
+      "goal": "PLAN",
+      "steps": [
+        {"id": "step_1", "tool": "calculate_replenishment", "arguments": {}},
+        {
+          "id": "step_2",
+          "tool": "create_procurement_plan",
+          "arguments": {
+            "items": {"$from": "step_1.replenishments", "$transform": "replenishments_to_items"},
+            "objective": "CHEAPEST",
+            "filters": {"max_total_budget": 50000}
+          }
+        }
+      ]
+    }
+  },
+  {
+    "id": "delivery_limit_is_preserved",
+    "tags": ["argument-mapping", "plan"],
+    "user": "Kritik ürünler için plan hazırla, teslimat süresi üç günden uzun olan teklifleri kullanma.",
+    "route": {"mode": "full"},
+    "acceptance_scenario": "max_delivery_days",
+    "plan": {
+      "type": "execution_plan",
+      "goal": "PLAN",
+      "steps": [
+        {"id": "step_1", "tool": "calculate_replenishment", "arguments": {}},
+        {
+          "id": "step_2",
+          "tool": "create_procurement_plan",
+          "arguments": {
+            "items": {"$from": "step_1.replenishments", "$transform": "replenishments_to_items"},
+            "objective": "CHEAPEST",
+            "filters": {"max_delivery_days": 3}
+          }
+        }
+      ]
+    }
+  },
+  {
+    "id": "balanced_objective_is_explicit",
+    "tags": ["argument-mapping", "plan"],
+    "user": "Kritik ürünler için plan hazırla; en düşük fiyat yerine fiyat, teslimat süresi ve satıcı puanını birlikte değerlendir.",
+    "route": {"mode": "full"},
+    "acceptance_scenario": "balanced_objective",
+    "plan": {
+      "type": "execution_plan",
+      "goal": "PLAN",
+      "steps": [
+        {"id": "step_1", "tool": "calculate_replenishment", "arguments": {}},
+        {
+          "id": "step_2",
+          "tool": "create_procurement_plan",
+          "arguments": {
+            "items": {"$from": "step_1.replenishments", "$transform": "replenishments_to_items"},
+            "objective": "BALANCED"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "id": "draft_does_not_place_order",
+    "tags": ["write-boundary", "draft"],
+    "user": "Elektronik kategorisindeki kritik ürünleri yalnızca puanı 4.5 üzerindeki satıcılardan taslak siparişe dönüştür.",
+    "route": {"mode": "full"},
+    "acceptance_scenario": "category_and_rating_filter",
+    "plan": {
+      "type": "execution_plan",
+      "goal": "DRAFT",
+      "steps": [
+        {"id": "step_1", "tool": "calculate_replenishment", "arguments": {"category": "Elektronik"}},
+        {
+          "id": "step_2",
+          "tool": "create_procurement_plan",
+          "arguments": {
+            "items": {"$from": "step_1.replenishments", "$transform": "replenishments_to_items"},
+            "objective": "CHEAPEST",
+            "filters": {"min_rating": 4.5}
+          }
+        },
+        {
+          "id": "step_3",
+          "tool": "create_purchase_draft",
+          "arguments": {
+            "items": {"$from": "step_2", "$transform": "plan_to_draft_items"}
+          }
+        }
+      ]
+    }
+  },
+  {
+    "id": "order_requires_pending_draft",
+    "tags": ["write-boundary", "order", "expected-rejection"],
+    "user": "Onaylıyorum, siparişi ver.",
+    "route": {"mode": "full"},
+    "plan": {
+      "type": "execution_plan",
+      "goal": "ORDER",
+      "steps": [
+        {"id": "step_1", "tool": "place_order", "arguments": {"draft_id": {"$from_context": "pending_draft_id"}}}
+      ]
+    },
+    "state": {"pending_draft_id": null},
+    "validation_error_contains": "Onay bekleyen bir taslak yok"
+  },
+  {
+    "id": "confirmed_order_keeps_incoming_chain",
+    "tags": ["write-boundary", "order"],
+    "user": "Onaylıyorum.",
+    "route": {"mode": "full"},
+    "acceptance_scenario": "draft_then_confirm",
+    "plan": {
+      "type": "execution_plan",
+      "goal": "ORDER",
+      "steps": [
+        {"id": "step_1", "tool": "place_order", "arguments": {"draft_id": {"$from_context": "pending_draft_id"}}},
+        {
+          "id": "step_2",
+          "tool": "create_incoming_orders",
+          "arguments": {"items": {"$from": "step_1", "$transform": "order_to_incoming_items"}}
+        }
+      ]
+    },
+    "state": {"pending_draft_id": 12}
+  },
+  {
+    "id": "receive_first_turn_is_listing_only",
+    "tags": ["write-boundary", "receive"],
+    "user": "Bekleyen siparişleri kontrol et ve teslim edilen ürünleri stoğa ekle.",
+    "route": {"mode": "full"},
+    "acceptance_scenario": "pending_orders_listing_only",
+    "plan": {
+      "type": "execution_plan",
+      "goal": "RECEIVE",
+      "steps": [
+        {"id": "step_1", "tool": "list_incoming_orders", "arguments": {"pending_only": true}}
+      ]
+    }
+  },
+  {
+    "id": "receive_requires_confirmed_pending_ids",
+    "tags": ["write-boundary", "receive", "expected-rejection"],
+    "user": "Teslim alınanları stoğa ekle.",
+    "route": {"mode": "full"},
+    "plan": {
+      "type": "execution_plan",
+      "goal": "RECEIVE",
+      "steps": [
+        {"id": "step_1", "tool": "receive_orders", "arguments": {"order_ids": {"$from_context": "pending_receive_ids"}}}
+      ]
+    },
+    "state": {"pending_receive_ids": []},
+    "validation_error_contains": "Onay bekleyen teslim alma yok"
+  },
+  {
+    "id": "confirmed_receive_uses_batch_tool",
+    "tags": ["write-boundary", "receive"],
+    "user": "Onaylıyorum.",
+    "route": {"mode": "full"},
+    "acceptance_scenario": "pending_orders_receive",
+    "plan": {
+      "type": "execution_plan",
+      "goal": "RECEIVE",
+      "steps": [
+        {"id": "step_1", "tool": "receive_orders", "arguments": {"order_ids": {"$from_context": "pending_receive_ids"}}}
+      ]
+    },
+    "state": {"pending_receive_ids": [3, 4]}
+  }
+]
