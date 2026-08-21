@@ -116,6 +116,17 @@ jobs:
       - name: Validate acceptance Compose profile
         run: docker compose --profile acceptance config --quiet
 
+  container-build:
+    name: Application container builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build application images
+        run: docker compose build stock-service llm-host web-ui
+
   quality-gate:
     name: Quality gate
     runs-on: ubuntu-latest
@@ -125,6 +136,7 @@ jobs:
       - frontend
       - java
       - compose
+      - container-build
     steps:
       - name: Require all CI jobs to pass
         env:
@@ -132,10 +144,13 @@ jobs:
           FRONTEND_RESULT: ${{ needs.frontend.result }}
           JAVA_RESULT: ${{ needs.java.result }}
           COMPOSE_RESULT: ${{ needs.compose.result }}
+          CONTAINER_BUILD_RESULT: ${{ needs.container-build.result }}
         run: |
-          printf 'python=%s\nfrontend=%s\njava=%s\ncompose=%s\n' \
-            "$PYTHON_RESULT" "$FRONTEND_RESULT" "$JAVA_RESULT" "$COMPOSE_RESULT"
+          printf 'python=%s\nfrontend=%s\njava=%s\ncompose=%s\ncontainer_build=%s\n' \
+            "$PYTHON_RESULT" "$FRONTEND_RESULT" "$JAVA_RESULT" "$COMPOSE_RESULT" \
+            "$CONTAINER_BUILD_RESULT"
           test "$PYTHON_RESULT" = success
           test "$FRONTEND_RESULT" = success
           test "$JAVA_RESULT" = success
           test "$COMPOSE_RESULT" = success
+          test "$CONTAINER_BUILD_RESULT" = success
