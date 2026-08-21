@@ -112,6 +112,25 @@ class SmokeStackTests(unittest.TestCase):
             with self.assertRaisesRegex(smoke_stack.SmokeFailure, "write tools"):
                 smoke_stack.check_read_only_chat(self.config())
 
+    def test_main_runs_optional_chat_once(self):
+        config = self.config(chat=True)
+        with (
+            patch.object(smoke_stack, "parse_args", return_value=config),
+            patch.object(smoke_stack, "check_stock"),
+            patch.object(smoke_stack, "check_ollama"),
+            patch.object(smoke_stack, "check_llm_health"),
+            patch.object(smoke_stack, "check_web"),
+            patch.object(smoke_stack, "check_conversation_crud"),
+            patch.object(smoke_stack, "check_read_only_chat"),
+            patch.object(smoke_stack, "with_retries", wraps=smoke_stack.with_retries) as retries,
+        ):
+            result = smoke_stack.main([])
+
+        self.assertEqual(0, result)
+        chat_calls = [call for call in retries.call_args_list if call.args[0] == "Read-only LLM chat"]
+        self.assertEqual(1, len(chat_calls))
+        self.assertEqual(1, chat_calls[0].args[2])
+
 
 if __name__ == "__main__":
     unittest.main()
