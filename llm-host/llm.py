@@ -1,3 +1,4 @@
+import json
 import os
 import unicodedata
 
@@ -66,6 +67,10 @@ def prepare_inference_messages(messages):
 
     Host-side plan validation and permission gates remain authoritative. Complex,
     write-like, procurement and reasoning requests keep the full planner prompt.
+
+    The compact messages are retained for diagnostics/tests, while LLMService.generate
+    can safely bypass Ollama entirely when `tool` is returned because the only valid
+    execution plan is deterministic and still passes through host validation/execution.
     """
     if not messages:
         return messages, None
@@ -98,6 +103,25 @@ Rules:
     ], tool
 
 
+def _fast_execution_plan(tool):
+    """Build the only permitted plan for a preclassified single-tool INFO lookup."""
+    return json.dumps(
+        {
+            "type": "execution_plan",
+            "goal": "INFO",
+            "steps": [
+                {
+                    "id": "step_1",
+                    "tool": tool,
+                    "arguments": {},
+                }
+            ],
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
 class LLMService:
     def __init__(self):
         self.url = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
@@ -116,7 +140,8 @@ class LLMService:
     def generate(self, messages):
         messages, fast_tool = prepare_inference_messages(messages)
         if fast_tool:
-            print(f"[LLM] fast read-only planner route: {fast_tool}")
+            print(f"[LLM] fast read-only planner bypass: {fast_tool} (Ollama skipped)")
+            return _fast_execution_plan(fast_tool)
 
         prompt_parts = []
         for message in messages:
