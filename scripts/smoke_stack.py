@@ -51,7 +51,14 @@ def request_json(
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             raw = response.read().decode("utf-8")
-            return response.status, json.loads(raw) if raw else None
+            if not raw:
+                return response.status, None
+            try:
+                return response.status, json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise SmokeFailure(f"{method} {url} returned invalid JSON: {raw[:300]}") from exc
+    except SmokeFailure:
+        raise
     except urllib.error.HTTPError as exc:
         raw = exc.read().decode("utf-8", errors="replace")
         raise SmokeFailure(f"{method} {url} -> HTTP {exc.code}: {raw[:300]}") from exc
@@ -97,7 +104,7 @@ def check_ollama(config: SmokeConfig) -> None:
         raise SmokeFailure("Ollama /api/tags returned an unexpected response")
     models = [entry.get("name", "") for entry in result.get("models", []) if isinstance(entry, dict)]
     expected = config.model.casefold()
-    if not any(name.casefold() == expected or name.casefold().startswith(expected + ":") for name in models):
+    if not any(name.casefold() == expected for name in models):
         raise SmokeFailure(f"Ollama is healthy but model {config.model!r} is not installed; models={models}")
     print(f"  [OK] Ollama: model {config.model} installed")
 
@@ -116,7 +123,18 @@ def check_web(config: SmokeConfig) -> None:
     print(f"  [OK] Web UI health: {body.strip() or 'HTTP 200'}")
 
 
-def check_conversation_crud(config: SmokeConfig) -> str:
+def delete_conversation(config: SmokeConfig, conversation_id: str, headers: dict[str, str]) -> None:
+    status, _ = request_json(
+        "DELETE",
+        f"{config.llm_url}/api/conversations/{conversation_id}",
+        headers=headers,
+        timeout=config.timeout,
+    )
+    if status != 204:
+        raise SmokeFailure(f"Conversation cleanup returned HTTP {status}, expected 204")
+
+
+def check_conversation_crud(config: SmokeConfig) -> None:
     owner = f"smoke-{uuid.uuid4()}"
     headers = {"X-Client-Id": owner}
     status, created = request_json(
@@ -137,7 +155,7 @@ def check_conversation_crud(config: SmokeConfig) -> str:
             headers=headers,
             timeout=config.timeout,
         )
-        if status != 200 or fetched.get("id") != conversation_id:
+        if status != 200 or not isinstance(fetched, dict) or fetched.get("id") != conversation_id:
             raise SmokeFailure("Conversation fetch did not return the created conversation")
 
         status, listing = request_json(
@@ -150,42 +168,25 @@ def check_conversation_crud(config: SmokeConfig) -> str:
         if status != 200 or conversation_id not in ids:
             raise SmokeFailure("Created conversation was not visible in owner-scoped listing")
         print("  [OK] Conversation persistence CRUD + owner scope")
-        return conversation_id
-    except Exception:
-        try:
-            request_json(
-                "DELETE",
-                f"{config.llm_url}/api/conversations/{conversation_id}",
-                headers=headers,
-                timeout=config.timeout,
-            )
-        except Exception:
-            pass
-        raise
     finally:
-        # DELETE returns an empty 204 body, which request_json supports.
         try:
-            request_json(
-                "DELETE",
-                f"{config.llm_url}/api/conversations/{conversation_id}",
-                headers=headers,
-                timeout=config.timeout,
-            )
+            delete_conversation(config, conversation_id, headers)
         except SmokeFailure as exc:
-            # A cleanup error should not hide an earlier successful CRUD check.
             print(f"  [WARN] Smoke conversation cleanup: {exc}")
 
 
 def check_read_only_chat(config: SmokeConfig) -> None:
     owner = f"smoke-chat-{uuid.uuid4()}"
     headers = {"X-Client-Id": owner}
-    _, created = request_json(
+    status, created = request_json(
         "POST",
         f"{config.llm_url}/api/conversations",
         payload={"title": "Smoke chat"},
         headers=headers,
         timeout=config.timeout,
     )
+    if status != 201 or not isinstance(created, dict) or not created.get("id"):
+        raise SmokeFailure("Smoke chat conversation could not be created")
     conversation_id = str(created["id"])
     try:
         status, result = request_json(
@@ -209,12 +210,7 @@ def check_read_only_chat(config: SmokeConfig) -> None:
         print(f"  [OK] Read-only LLM + MCP chat ({len(tools)} tool types)")
     finally:
         try:
-            request_json(
-                "DELETE",
-                f"{config.llm_url}/api/conversations/{conversation_id}",
-                headers=headers,
-                timeout=config.timeout,
-            )
+            delete_conversation(config, conversation_id, headers)
         except SmokeFailure as exc:
             print(f"  [WARN] Smoke chat cleanup: {exc}")
 
@@ -233,6 +229,10 @@ def parse_args(argv: list[str] | None = None) -> SmokeConfig:
     args = parser.parse_args(argv)
     if args.retries < 1:
         parser.error("--retries must be at least 1")
+    if args.timeout <= 0:
+        parser.error("--timeout must be greater than zero")
+    if args.retry_delay < 0:
+        parser.error("--retry-delay cannot be negative")
     return SmokeConfig(
         stock_url=args.stock_url.rstrip("/"),
         llm_url=args.llm_url.rstrip("/"),
