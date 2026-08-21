@@ -34,7 +34,18 @@ The chat smoke test asserts that:
 
 The smoke conversation is deleted after the test.
 
-The current LLM Host allows the synchronous Ollama generation call up to 300 seconds. The smoke client therefore allows up to 330 seconds for the optional chat request and makes only one chat attempt. A client-side timeout cannot cancel the already-running server-side generation, so immediately retrying would create misleading overlap on slow CPU-bound local machines.
+CPU-only inference can take several minutes because the planning system prompt is large. The Docker stack therefore defaults `OLLAMA_READ_TIMEOUT` to 600 seconds and the smoke verifier defaults `SMOKE_CHAT_TIMEOUT` / `--chat-timeout` to 630 seconds. Keep the smoke timeout slightly larger than the LLM Host read timeout.
+
+The optional chat is attempted only once. If the client times out, immediately retrying can overlap with a still-running server-side generation and produce misleading failures.
+
+Override the inference windows when needed:
+
+```bash
+OLLAMA_READ_TIMEOUT=900 docker compose up -d --build llm-host
+python scripts/smoke_stack.py --chat --chat-timeout 930
+```
+
+On PowerShell, set the values in `.env` or use the CLI `--chat-timeout` flag for the smoke client.
 
 ## Custom ports / URLs
 
@@ -64,7 +75,10 @@ SMOKE_STOCK_URL
 SMOKE_LLM_URL
 SMOKE_WEB_URL
 SMOKE_OLLAMA_URL
+SMOKE_CHAT_TIMEOUT
 OLLAMA_MODEL
+OLLAMA_CONNECT_TIMEOUT
+OLLAMA_READ_TIMEOUT
 ```
 
 ## Startup retries
