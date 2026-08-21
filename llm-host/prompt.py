@@ -117,7 +117,7 @@ VERİ:
 
 KURALLAR:
 - Veri, fiyat, stok, tarih veya miktar uydurma.
-- Karşılaştırmalarda varsa `hesaplanan_karsilastirma` değerlerini aynen kullan; yeniden aritmetik yapma.
+- ARİTMETİK YAPMA: Karşılaştırmalarda varsa `hesaplanan_karsilastirma` değerlerini aynen kullan; yeniden toplama, çıkarma veya yüzde hesabı yapma.
 - Sipariş miktarı soruluyorsa replenishmentQuantityNeeded/quantity değerlerini doğrudan belirt.
 - İki plan varsa maliyet, teslimat ve satıcı verilerini karşılaştır; veri yoksa tahmin etme.
 - JSON değil, kısa ve doğal Türkçe cevap ver.
