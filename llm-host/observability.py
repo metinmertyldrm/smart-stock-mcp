@@ -63,8 +63,22 @@ def emit_event(event: str, *, level: int = logging.INFO, **fields: Any) -> None:
     logger.log(level, json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str))
 
 
+def correlate_response_payload(payload: Any, request_id: str) -> bool:
+    """Attach the HTTP correlation ID to existing chat telemetry in-place."""
+    if not isinstance(payload, dict):
+        return False
+    telemetry = payload.get("telemetry")
+    if not isinstance(telemetry, dict):
+        return False
+    telemetry["requestId"] = request_id
+    missing = telemetry.get("missingFields")
+    if isinstance(missing, list):
+        telemetry["missingFields"] = [item for item in missing if item != "HTTP request ID"]
+    return True
+
+
 class MetricsRegistry:
-    """Small process-local metrics registry with bounded route labels."""
+    """Small process-local metrics registry with bounded route/tool labels."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -75,6 +89,17 @@ class MetricsRegistry:
         self._routes: dict[tuple[str, str, int], dict[str, float | int]] = defaultdict(
             lambda: {"count": 0, "durationMsTotal": 0.0, "durationMsMax": 0.0}
         )
+        self._chat_total = 0
+        self._chat_succeeded = 0
+        self._chat_failed = 0
+        self._chat_repaired = 0
+        self._chat_duration_samples = 0
+        self._chat_duration_total = 0.0
+        self._chat_duration_max = 0.0
+        self._chat_goals: dict[str, int] = defaultdict(int)
+        self._tools: dict[tuple[str, str], dict[str, float | int]] = defaultdict(
+            lambda: {"count": 0, "durationSamples": 0, "durationMsTotal": 0.0, "durationMsMax": 0.0}
+        )
 
     def reset(self) -> None:
         """Reset counters for deterministic tests; service uptime restarts too."""
@@ -84,6 +109,15 @@ class MetricsRegistry:
             self._http_active = 0
             self._http_errors = 0
             self._routes.clear()
+            self._chat_total = 0
+            self._chat_succeeded = 0
+            self._chat_failed = 0
+            self._chat_repaired = 0
+            self._chat_duration_samples = 0
+            self._chat_duration_total = 0.0
+            self._chat_duration_max = 0.0
+            self._chat_goals.clear()
+            self._tools.clear()
 
     def request_started(self) -> None:
         with self._lock:
@@ -103,6 +137,47 @@ class MetricsRegistry:
             item["durationMsTotal"] = float(item["durationMsTotal"]) + safe_duration
             item["durationMsMax"] = max(float(item["durationMsMax"]), safe_duration)
 
+    def record_chat_response(self, payload: Any) -> None:
+        """Aggregate one bounded chat response and its existing execution trace."""
+        if not isinstance(payload, dict) or "conversationId" not in payload:
+            return
+        succeeded = payload.get("succeeded") is True
+        repaired = bool((payload.get("explanation") or {}).get("repaired"))
+        goal = str((payload.get("plan") or {}).get("goal") or "UNKNOWN").upper()[:32]
+        telemetry = payload.get("telemetry") or {}
+        duration = telemetry.get("durationMs") if isinstance(telemetry, dict) else None
+        duration_value = float(duration) if isinstance(duration, (int, float)) else None
+        trace = payload.get("trace") if isinstance(payload.get("trace"), list) else []
+
+        with self._lock:
+            self._chat_total += 1
+            if succeeded:
+                self._chat_succeeded += 1
+            else:
+                self._chat_failed += 1
+            if repaired:
+                self._chat_repaired += 1
+            self._chat_goals[goal] += 1
+            if duration_value is not None:
+                safe_duration = max(duration_value, 0.0)
+                self._chat_duration_samples += 1
+                self._chat_duration_total += safe_duration
+                self._chat_duration_max = max(self._chat_duration_max, safe_duration)
+
+            for item in trace:
+                if not isinstance(item, dict):
+                    continue
+                tool = str(item.get("tool") or "unknown")[:64]
+                status = str(item.get("status") or "unknown")[:16]
+                stats = self._tools[(tool, status)]
+                stats["count"] = int(stats["count"]) + 1
+                tool_duration = item.get("durationMs")
+                if isinstance(tool_duration, (int, float)):
+                    safe_tool_duration = max(float(tool_duration), 0.0)
+                    stats["durationSamples"] = int(stats["durationSamples"]) + 1
+                    stats["durationMsTotal"] = float(stats["durationMsTotal"]) + safe_tool_duration
+                    stats["durationMsMax"] = max(float(stats["durationMsMax"]), safe_tool_duration)
+
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             routes = []
@@ -120,6 +195,23 @@ class MetricsRegistry:
                         "durationMsMax": round(float(values["durationMsMax"]), 3),
                     }
                 )
+
+            tools = []
+            for (tool, status), values in sorted(self._tools.items()):
+                samples = int(values["durationSamples"])
+                total = float(values["durationMsTotal"])
+                tools.append(
+                    {
+                        "tool": tool,
+                        "status": status,
+                        "count": int(values["count"]),
+                        "durationSamples": samples,
+                        "durationMsTotal": round(total, 3),
+                        "durationMsAverage": round(total / samples, 3) if samples else None,
+                        "durationMsMax": round(float(values["durationMsMax"]), 3) if samples else None,
+                    }
+                )
+
             return {
                 "service": SERVICE_NAME,
                 "uptimeSeconds": round(max(time.monotonic() - self._started_clock, 0.0), 3),
@@ -129,6 +221,20 @@ class MetricsRegistry:
                     "serverErrors": self._http_errors,
                     "routes": routes,
                 },
+                "chat": {
+                    "total": self._chat_total,
+                    "succeeded": self._chat_succeeded,
+                    "failed": self._chat_failed,
+                    "repaired": self._chat_repaired,
+                    "durationSamples": self._chat_duration_samples,
+                    "durationMsTotal": round(self._chat_duration_total, 3),
+                    "durationMsAverage": round(self._chat_duration_total / self._chat_duration_samples, 3)
+                    if self._chat_duration_samples
+                    else None,
+                    "durationMsMax": round(self._chat_duration_max, 3) if self._chat_duration_samples else None,
+                    "goals": dict(sorted(self._chat_goals.items())),
+                },
+                "tools": tools,
             }
 
 
