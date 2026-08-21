@@ -7,8 +7,18 @@ imports from ``app`` remain stable during the refactor.
 import asyncio
 
 import agent_runtime as _runtime
+import conversation_state as _state
 import plan_execution as _execution
 from agent_runtime import *  # noqa: F401,F403
+from conversation_state import (  # noqa: F401
+    CachedProcurementPlan,
+    ConversationState,
+    STATE_FILE,
+    is_plan_valid,
+    load_state,
+    save_state,
+    serialize_plan,
+)
 from plan_execution import (  # noqa: F401
     COLLECTION_ARGUMENTS,
     EMPTY_SOURCE_REASONS,
@@ -36,7 +46,6 @@ from plan_execution import (  # noqa: F401
     resolve_context_reference,
     resolve_step_arguments,
     save_reference,
-    serialize_plan,
     update_last_product,
 )
 from plan_validation import (  # noqa: F401
@@ -50,12 +59,24 @@ from plan_validation import (  # noqa: F401
 
 # Functions imported from agent_runtime keep that module's global namespace.
 # Rebind those globals to the extracted implementations so CLI, web and tests
-# share one validation/execution path while the legacy runtime is decomposed.
+# share one validation/execution/state path while the legacy runtime is decomposed.
 _runtime.ALLOWED_CONTEXT_SOURCES = ALLOWED_CONTEXT_SOURCES
 _runtime.INFO_TOOLS = INFO_TOOLS
 _runtime.parse_execution_plan = parse_execution_plan
 _runtime.remove_json_comments = remove_json_comments
 _runtime.validate_plan_against_state = validate_plan_against_state
+
+_STATE_EXPORTS = (
+    "CachedProcurementPlan",
+    "ConversationState",
+    "STATE_FILE",
+    "is_plan_valid",
+    "load_state",
+    "save_state",
+    "serialize_plan",
+)
+for _name in _STATE_EXPORTS:
+    setattr(_runtime, _name, getattr(_state, _name))
 
 _EXECUTION_EXPORTS = (
     "COLLECTION_ARGUMENTS",
@@ -84,7 +105,6 @@ _EXECUTION_EXPORTS = (
     "resolve_context_reference",
     "resolve_step_arguments",
     "save_reference",
-    "serialize_plan",
     "update_last_product",
 )
 for _name in _EXECUTION_EXPORTS:
