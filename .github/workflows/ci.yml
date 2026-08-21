@@ -1,8 +1,7 @@
 name: CI
 
 on:
-  pull_request:
-    branches: [main]
+  pull_request: {}
   push:
     branches: [main]
   workflow_dispatch:
@@ -39,6 +38,9 @@ jobs:
           -r llm-host/requirements.txt
           -r stock-mcp/requirements.txt
           -r marketplace-mcp/requirements.txt
+
+      - name: Verify installed Python packages
+        run: python -m pip check
 
       - name: Run unit tests
         run: python -m unittest discover -s llm-host -p 'test_*.py'
