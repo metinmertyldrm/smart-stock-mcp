@@ -8,7 +8,7 @@ services:
       POSTGRES_USER: ${DB_USERNAME:-postgres}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
     ports:
-      - "${POSTGRES_PORT:-5433}:5432"
+      - "${BIND_HOST:-127.0.0.1}:${POSTGRES_PORT:-5433}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -32,7 +32,7 @@ services:
       JPA_SHOW_SQL: "false"
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173}
     ports:
-      - "${STOCK_SERVICE_PORT:-8081}:8081"
+      - "${BIND_HOST:-127.0.0.1}:${STOCK_SERVICE_PORT:-8081}:8081"
     depends_on:
       postgres:
         condition: service_healthy
@@ -47,7 +47,7 @@ services:
   ollama:
     image: ${OLLAMA_IMAGE:-ollama/ollama:latest}
     ports:
-      - "${OLLAMA_PORT:-11434}:11434"
+      - "${BIND_HOST:-127.0.0.1}:${OLLAMA_PORT:-11434}:11434"
     volumes:
       - ollama_data:/root/.ollama
     healthcheck:
@@ -80,7 +80,7 @@ services:
       LLM_CORS_ALLOWED_ORIGINS: ${LLM_CORS_ALLOWED_ORIGINS:-http://localhost:5173}
       LLM_CONVERSATIONS_DB: /data/conversations.db
     ports:
-      - "${LLM_HOST_PORT:-8000}:8000"
+      - "${BIND_HOST:-127.0.0.1}:${LLM_HOST_PORT:-8000}:8000"
     volumes:
       - llm_conversations:/data
     depends_on:
@@ -104,7 +104,7 @@ services:
         VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8081}
         VITE_LLM_HOST_URL: ${VITE_LLM_HOST_URL:-http://localhost:8000}
     ports:
-      - "${WEB_UI_PORT:-5173}:80"
+      - "${BIND_HOST:-127.0.0.1}:${WEB_UI_PORT:-5173}:80"
     depends_on:
       stock-service:
         condition: service_healthy
@@ -148,7 +148,7 @@ services:
       DB_PASSWORD: ${DB_PASSWORD:-postgres}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173}
     ports:
-      - "${ACCEPTANCE_SERVICE_PORT:-8082}:8082"
+      - "${BIND_HOST:-127.0.0.1}:${ACCEPTANCE_SERVICE_PORT:-8082}:8082"
     depends_on:
       acceptance-db-init:
         condition: service_completed_successfully
