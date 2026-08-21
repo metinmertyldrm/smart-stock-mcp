@@ -1,0 +1,166 @@
+name: smart-stock-mcp
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: smart_stock
+      POSTGRES_USER: ${DB_USERNAME:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  stock-service:
+    build:
+      context: .
+      dockerfile: stock-service/Dockerfile
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/smart_stock
+      DB_USERNAME: ${DB_USERNAME:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      SERVER_PORT: "8081"
+      DB_DDL_AUTO: update
+      SQL_INIT_MODE: always
+      JPA_SHOW_SQL: "false"
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173}
+    ports:
+      - "${STOCK_SERVICE_PORT:-8081}:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8081/api/products >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 12
+    restart: unless-stopped
+
+  ollama:
+    image: ${OLLAMA_IMAGE:-ollama/ollama:latest}
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  ollama-model:
+    image: ${OLLAMA_IMAGE:-ollama/ollama:latest}
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    command: ["pull", "${OLLAMA_MODEL:-qwen3:8b}"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+
+  llm-host:
+    build:
+      context: .
+      dockerfile: llm-host/Dockerfile
+    environment:
+      STOCK_SERVICE_URL: http://stock-service:8081
+      OLLAMA_URL: http://ollama:11434/api/generate
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b}
+      OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-8192}
+      OLLAMA_NUM_PREDICT: ${OLLAMA_NUM_PREDICT:-1024}
+      LLM_CORS_ALLOWED_ORIGINS: ${LLM_CORS_ALLOWED_ORIGINS:-http://localhost:5173}
+      LLM_CONVERSATIONS_DB: /data/conversations.db
+    ports:
+      - "${LLM_HOST_PORT:-8000}:8000"
+    volumes:
+      - llm_conversations:/data
+    depends_on:
+      stock-service:
+        condition: service_healthy
+      ollama-model:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 12
+    restart: unless-stopped
+
+  web-ui:
+    build:
+      context: .
+      dockerfile: web-ui/Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8081}
+        VITE_LLM_HOST_URL: ${VITE_LLM_HOST_URL:-http://localhost:8000}
+    ports:
+      - "${WEB_UI_PORT:-5173}:80"
+    depends_on:
+      stock-service:
+        condition: service_healthy
+      llm-host:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  acceptance-db-init:
+    image: postgres:17-alpine
+    profiles: ["acceptance"]
+    environment:
+      POSTGRES_USER: ${DB_USERNAME:-postgres}
+      PGPASSWORD: ${DB_PASSWORD:-postgres}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command:
+      - sh
+      - -ec
+      - |
+        if ! psql -h postgres -U "$${POSTGRES_USER}" -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='smart_stock_acceptance'" | grep -q 1; then
+          psql -h postgres -U "$${POSTGRES_USER}" -d postgres -c 'CREATE DATABASE smart_stock_acceptance';
+        fi
+    restart: "no"
+
+  stock-service-acceptance:
+    build:
+      context: .
+      dockerfile: stock-service/Dockerfile
+    profiles: ["acceptance"]
+    environment:
+      SPRING_PROFILES_ACTIVE: acceptance
+      SERVER_PORT: "8082"
+      DB_URL: jdbc:postgresql://postgres:5432/smart_stock_acceptance
+      DB_USERNAME: ${DB_USERNAME:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173}
+    ports:
+      - "${ACCEPTANCE_SERVICE_PORT:-8082}:8082"
+    depends_on:
+      acceptance-db-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8082/api/products >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 12
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  ollama_data:
+  llm_conversations:
