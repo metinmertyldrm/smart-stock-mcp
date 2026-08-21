@@ -57,9 +57,9 @@ Nginx exposes two application proxy paths:
 - `/stock/...` proxies to the stock service but accepts only `GET` and `HEAD`,
 - `/llm/...` proxies to the secured LLM host and preserves bearer authentication.
 
-The normal `stock-service` and `llm-host` containers no longer publish host ports. This prevents a browser or another host process from bypassing the web gateway and calling stock mutation endpoints directly through the normal Docker topology.
+The normal `postgres`, `stock-service` and `llm-host` containers do not publish host ports. They remain reachable to one another over the Docker-internal network. Keeping the normal PostgreSQL service internal also avoids conflicts with an independently installed host PostgreSQL instance and removes an unnecessary host-facing database socket.
 
-PostgreSQL and Ollama may still be published for local development, but their published ports are bound to `127.0.0.1` rather than all interfaces.
+Ollama remains published for local development because the host-side smoke verifier checks the configured model directly; its port is bound to `127.0.0.1` rather than all interfaces.
 
 Acceptance PostgreSQL and the acceptance Spring service remain host-accessible because the acceptance runner/reset tooling is host-side. Those ports are also loopback-only and operate on the isolated acceptance database.
 
