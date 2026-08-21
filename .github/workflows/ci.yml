@@ -5,6 +5,7 @@ on:
     branches: [main]
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -79,7 +80,7 @@ jobs:
         run: npm run build
 
   java:
-    name: Java tests
+    name: Java verify
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -96,8 +97,8 @@ jobs:
           java-version: '21'
           cache: maven
 
-      - name: Run Maven tests
-        run: mvn -B test
+      - name: Verify Maven project
+        run: mvn -B verify
 
   compose:
     name: Docker Compose validation
@@ -107,5 +108,32 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Validate Compose configuration
+      - name: Validate default Compose configuration
         run: docker compose config --quiet
+
+      - name: Validate acceptance Compose profile
+        run: docker compose --profile acceptance config --quiet
+
+  quality-gate:
+    name: Quality gate
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - python
+      - frontend
+      - java
+      - compose
+    steps:
+      - name: Require all CI jobs to pass
+        env:
+          PYTHON_RESULT: ${{ needs.python.result }}
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
+          JAVA_RESULT: ${{ needs.java.result }}
+          COMPOSE_RESULT: ${{ needs.compose.result }}
+        run: |
+          printf 'python=%s\nfrontend=%s\njava=%s\ncompose=%s\n' \
+            "$PYTHON_RESULT" "$FRONTEND_RESULT" "$JAVA_RESULT" "$COMPOSE_RESULT"
+          test "$PYTHON_RESULT" = success
+          test "$FRONTEND_RESULT" = success
+          test "$JAVA_RESULT" = success
+          test "$COMPOSE_RESULT" = success
