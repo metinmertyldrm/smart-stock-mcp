@@ -1,3 +1,4 @@
+import os
 import sys
 import json
 from contextlib import AsyncExitStack
@@ -5,6 +6,24 @@ from contextlib import AsyncExitStack
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.types import TextContent
+
+
+def _server_parameters(server_path: str) -> StdioServerParameters:
+    """Create MCP stdio parameters with the host environment inherited.
+
+    The MCP SDK's default child environment is intentionally limited and can
+    omit application-specific variables. In Docker this caused STOCK_SERVICE_URL
+    to disappear, making stock/marketplace MCP children fall back to
+    http://localhost:8081 inside the llm-host container. Passing an explicit
+    copy preserves normal subprocess inheritance semantics for our trusted MCP
+    child processes without allowing them to mutate the parent environment.
+    """
+    return StdioServerParameters(
+        # app.py hangi Python ile çalışıyorsa server da aynı Python ile açılır
+        command=sys.executable,
+        args=[server_path],
+        env=dict(os.environ),
+    )
 
 
 class MCPClient:
@@ -38,11 +57,7 @@ class MCPClient:
         for server_name, server_path in self.servers.items():
             print(f"{server_name} MCP server'ına bağlanılıyor...")
 
-            server_params = StdioServerParameters(
-                # app.py hangi Python ile çalışıyorsa server da aynı Python ile açılır
-                command=sys.executable,
-                args=[server_path],
-            )
+            server_params = _server_parameters(server_path)
 
             read, write = await self.exit_stack.enter_async_context(
                 stdio_client(server_params)
