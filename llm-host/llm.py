@@ -11,6 +11,12 @@ class LLMService:
         # Asildiginda prompt BASTAN kesilir; ilk kesilen bolum AVAILABLE TOOLS olur.
         self.num_ctx = int(os.getenv("OLLAMA_NUM_CTX", "8192"))
         self.num_predict = int(os.getenv("OLLAMA_NUM_PREDICT", "1024"))
+        # Keep network limits configurable, but do not hide prompt/model performance
+        # problems behind ever-growing defaults. Slower environments can override them.
+        self.connect_timeout = float(os.getenv("OLLAMA_CONNECT_TIMEOUT", "20"))
+        self.read_timeout = float(os.getenv("OLLAMA_READ_TIMEOUT", "300"))
+        if self.connect_timeout <= 0 or self.read_timeout <= 0:
+            raise ValueError("OLLAMA_CONNECT_TIMEOUT and OLLAMA_READ_TIMEOUT must be positive")
 
     def generate(self, messages):
         prompt_parts = []
@@ -37,11 +43,16 @@ class LLMService:
             }
         }
 
-        response = requests.post(
-            self.url,
-            json=payload,
-            timeout=(20, 300)
-        )
+        try:
+            response = requests.post(
+                self.url,
+                json=payload,
+                timeout=(self.connect_timeout, self.read_timeout)
+            )
+        except requests.exceptions.Timeout as exc:
+            raise RuntimeError(
+                f"Ollama zaman aşımı: connect={self.connect_timeout}s, read={self.read_timeout}s"
+            ) from exc
 
         try:
             response.raise_for_status()
