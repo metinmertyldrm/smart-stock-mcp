@@ -34,15 +34,17 @@ The chat smoke test asserts that:
 
 The smoke conversation is deleted after the test.
 
-CPU-only inference can take several minutes because the planning system prompt is large. The Docker stack therefore defaults `OLLAMA_READ_TIMEOUT` to 600 seconds and the smoke verifier defaults `SMOKE_CHAT_TIMEOUT` / `--chat-timeout` to 630 seconds. Keep the smoke timeout slightly larger than the LLM Host read timeout.
+The LLM Host request timeout is configurable through `OLLAMA_CONNECT_TIMEOUT` and `OLLAMA_READ_TIMEOUT`; the Docker defaults remain 20 seconds / 300 seconds. The optional smoke chat timeout is independently configurable through `SMOKE_CHAT_TIMEOUT` / `--chat-timeout` and defaults to 330 seconds.
 
 The optional chat is attempted only once. If the client times out, immediately retrying can overlap with a still-running server-side generation and produce misleading failures.
 
-Override the inference windows when needed:
+A real Windows/Docker Desktop CPU-only run with `qwen3:8b` showed that the current execution-planning prompt can exceed both 300 seconds and an experimental 600-second window. That is treated as a model/prompt performance finding rather than a reason to keep increasing default timeouts. Prompt size, local model sizing and the synchronous Ollama call are follow-up work for the LLM-host refactor/resilience tasks.
+
+For diagnostics only, the windows can still be overridden explicitly:
 
 ```bash
-OLLAMA_READ_TIMEOUT=900 docker compose up -d --build llm-host
-python scripts/smoke_stack.py --chat --chat-timeout 930
+OLLAMA_READ_TIMEOUT=600 docker compose up -d --build llm-host
+python scripts/smoke_stack.py --chat --chat-timeout 630
 ```
 
 On PowerShell, set the values in `.env` or use the CLI `--chat-timeout` flag for the smoke client.
