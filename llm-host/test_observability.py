@@ -9,6 +9,7 @@ from observability import (
     correlate_response_payload,
     current_request_id,
     emit_event,
+    logger,
     normalize_route,
     readiness_snapshot,
     reset_request_id,
@@ -17,6 +18,12 @@ from observability import (
 
 
 class RequestCorrelationTest(unittest.TestCase):
+    def test_structured_logger_has_dedicated_info_stream(self):
+        self.assertFalse(logger.propagate)
+        self.assertLessEqual(logger.getEffectiveLevel(), logging.INFO)
+        self.assertTrue(logger.handlers)
+        self.assertTrue(any(handler.level <= logging.INFO for handler in logger.handlers))
+
     def test_request_context_is_scoped_and_structured_log_includes_id(self):
         token = set_request_id("req-123")
         try:
