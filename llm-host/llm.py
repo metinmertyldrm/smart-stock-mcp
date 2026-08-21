@@ -11,11 +11,10 @@ class LLMService:
         # Asildiginda prompt BASTAN kesilir; ilk kesilen bolum AVAILABLE TOOLS olur.
         self.num_ctx = int(os.getenv("OLLAMA_NUM_CTX", "8192"))
         self.num_predict = int(os.getenv("OLLAMA_NUM_PREDICT", "1024"))
-        # CPU-only local inference can exceed five minutes for the large planning prompt.
-        # Keep both values configurable so slower machines can widen the window without
-        # changing application code.
+        # Keep network limits configurable, but do not hide prompt/model performance
+        # problems behind ever-growing defaults. Slower environments can override them.
         self.connect_timeout = float(os.getenv("OLLAMA_CONNECT_TIMEOUT", "20"))
-        self.read_timeout = float(os.getenv("OLLAMA_READ_TIMEOUT", "600"))
+        self.read_timeout = float(os.getenv("OLLAMA_READ_TIMEOUT", "300"))
         if self.connect_timeout <= 0 or self.read_timeout <= 0:
             raise ValueError("OLLAMA_CONNECT_TIMEOUT and OLLAMA_READ_TIMEOUT must be positive")
 
