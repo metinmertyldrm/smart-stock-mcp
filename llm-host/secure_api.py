@@ -1,23 +1,34 @@
-"""Security wrapper for the Smart Stock LLM HTTP API.
+"""Security and observability wrapper for the Smart Stock LLM HTTP API.
 
 `web_api` keeps the orchestration implementation and its internal X-Client-Id
 owner contract. This module is the deployable ASGI entry point: it issues opaque
-sessions, authenticates bearer tokens, and replaces any caller-supplied owner
-header with the server-side session owner before the request reaches web_api.
+sessions, authenticates bearer tokens, injects server-owned identity, and adds
+request correlation plus process-local operational metrics.
 """
 from __future__ import annotations
 
+import logging
 import os
+import time
+import uuid
 
 from fastapi import Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from observability import (
+    emit_event,
+    metrics,
+    normalize_route,
+    readiness_snapshot,
+    reset_request_id,
+    set_request_id,
+)
 from security import SessionError, SessionStore
 from web_api import app
 
 
-PUBLIC_PATHS = {"/api/health", "/api/session"}
+PUBLIC_PATHS = {"/api/health", "/api/ready", "/api/session"}
 sessions = SessionStore()
 
 
@@ -41,6 +52,18 @@ async def create_session():
     )
 
 
+@app.get("/api/ready")
+async def readiness():
+    payload, status_code = readiness_snapshot(getattr(app.state, "agent", None))
+    return JSONResponse(status_code=status_code, content=payload)
+
+
+@app.get("/api/metrics")
+async def metric_snapshot():
+    """Return bounded process-local metrics; protected by the Bearer boundary."""
+    return metrics.snapshot()
+
+
 @app.middleware("http")
 async def require_session(request: Request, call_next):
     if request.method == "OPTIONS" or request.url.path in PUBLIC_PATHS:
@@ -48,6 +71,12 @@ async def require_session(request: Request, call_next):
     try:
         owner_id = sessions.owner_for_authorization(request.headers.get("authorization"))
     except SessionError:
+        emit_event(
+            "security.session.rejected",
+            level=logging.WARNING,
+            method=request.method,
+            route=normalize_route(request.url.path),
+        )
         return JSONResponse(
             status_code=401,
             content={"detail": "Geçerli bir oturum gerekli."},
@@ -55,6 +84,43 @@ async def require_session(request: Request, call_next):
         )
     request.scope["headers"] = authenticated_headers(list(request.scope.get("headers", [])), owner_id)
     return await call_next(request)
+
+
+@app.middleware("http")
+async def observe_request(request: Request, call_next):
+    """Correlate and measure every request without logging bodies or credentials."""
+    request_id = str(uuid.uuid4())
+    route = normalize_route(request.url.path)
+    token = set_request_id(request_id)
+    metrics.request_started()
+    started = time.perf_counter()
+    status_code = 500
+    emit_event("http.request.started", method=request.method, route=route)
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        response.headers["X-Request-Id"] = request_id
+        return response
+    except Exception as exc:
+        emit_event(
+            "http.request.failed",
+            level=logging.ERROR,
+            method=request.method,
+            route=route,
+            errorType=type(exc).__name__,
+        )
+        raise
+    finally:
+        duration_ms = round((time.perf_counter() - started) * 1000, 3)
+        metrics.request_finished(request.method, route, status_code, duration_ms)
+        emit_event(
+            "http.request.completed",
+            method=request.method,
+            route=route,
+            status=status_code,
+            durationMs=duration_ms,
+        )
+        reset_request_id(token)
 
 
 # `web_api` already has a restrictive CORS layer for direct/internal tests. The
@@ -69,4 +135,5 @@ app.add_middleware(
     allow_origins=origins,
     allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["Content-Type", "Authorization"],
+    expose_headers=["X-Request-Id"],
 )
