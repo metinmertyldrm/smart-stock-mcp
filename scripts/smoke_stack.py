@@ -167,12 +167,15 @@ def check_conversation_crud(config: SmokeConfig) -> None:
         ids = [item.get("id") for item in listing.get("items", []) if isinstance(item, dict)] if isinstance(listing, dict) else []
         if status != 200 or conversation_id not in ids:
             raise SmokeFailure("Created conversation was not visible in owner-scoped listing")
-        print("  [OK] Conversation persistence CRUD + owner scope")
-    finally:
+    except Exception:
         try:
             delete_conversation(config, conversation_id, headers)
-        except SmokeFailure as exc:
-            print(f"  [WARN] Smoke conversation cleanup: {exc}")
+        except SmokeFailure:
+            pass
+        raise
+
+    delete_conversation(config, conversation_id, headers)
+    print("  [OK] Conversation persistence CRUD + owner scope")
 
 
 def check_read_only_chat(config: SmokeConfig) -> None:
