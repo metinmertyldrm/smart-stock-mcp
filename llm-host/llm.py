@@ -1,6 +1,101 @@
 import os
+import unicodedata
 
 import requests
+
+
+FAST_INFO_BLOCKERS = (
+    "plan",
+    "taslak",
+    "siparis",
+    "satin al",
+    "teklif",
+    "fiyat",
+    "karsilastir",
+    "kac tane",
+    "ne kadar",
+    "almaliyim",
+    "onay",
+    "teslim",
+    "stoga al",
+    "purchase",
+    "draft",
+    "order",
+    "compare",
+    "cheapest",
+    "fastest",
+)
+OUT_OF_STOCK_TERMS = (
+    "stokta olmayan",
+    "stok yok",
+    "tukenen",
+    "tukenmis",
+    "out of stock",
+)
+LOW_STOCK_TERMS = (
+    "kritik stok",
+    "kritik urun",
+    "azalan stok",
+    "azalan urun",
+    "dusuk stok",
+    "low stock",
+    "minimum stok",
+)
+
+
+def _normalize_for_route(text):
+    normalized = unicodedata.normalize("NFKD", (text or "").casefold())
+    normalized = "".join(char for char in normalized if not unicodedata.combining(char))
+    return normalized.replace("ı", "i")
+
+
+def _fast_read_only_tool(user_message):
+    """Return a safe single read tool for unambiguous stock-state retrievals."""
+    normalized = _normalize_for_route(user_message)
+    if any(term in normalized for term in FAST_INFO_BLOCKERS):
+        return None
+    if any(term in normalized for term in OUT_OF_STOCK_TERMS):
+        return "list_out_of_stock"
+    if any(term in normalized for term in LOW_STOCK_TERMS):
+        return "list_low_stock"
+    return None
+
+
+def prepare_inference_messages(messages):
+    """Shrink only clearly read-only execution-planner requests before inference.
+
+    Host-side plan validation and permission gates remain authoritative. Complex,
+    write-like, procurement and reasoning requests keep the full planner prompt.
+    """
+    if not messages:
+        return messages, None
+
+    system = next((item for item in messages if item.get("role") == "system"), None)
+    if not system or "Smart Stock & Procurement execution planner." not in system.get("content", ""):
+        return messages, None
+
+    user = next((item for item in reversed(messages) if item.get("role") == "user"), None)
+    if not user:
+        return messages, None
+
+    tool = _fast_read_only_tool(user.get("content", ""))
+    if not tool:
+        return messages, None
+
+    compact_system = f"""Smart Stock read-only execution planner.
+This request was preclassified as a simple stock-state lookup.
+Return EXACTLY one JSON object and no Markdown/prose:
+{{"type":"execution_plan","goal":"INFO","steps":[{{"id":"step_1","tool":"{tool}","arguments":{{}}}}]}}
+Rules:
+- Use exactly `{tool}` and no other tool.
+- Goal must be INFO and arguments must be an empty object.
+- Never emit write tools, procurement plans, drafts, orders, receive actions, `params`, or `final_response`.
+- Do not invent data; this response only selects the read tool. Actual data comes from MCP execution.
+"""
+    return [
+        {"role": "system", "content": compact_system},
+        {"role": "user", "content": user.get("content", "")},
+    ], tool
 
 
 class LLMService:
@@ -19,6 +114,10 @@ class LLMService:
             raise ValueError("OLLAMA_CONNECT_TIMEOUT and OLLAMA_READ_TIMEOUT must be positive")
 
     def generate(self, messages):
+        messages, fast_tool = prepare_inference_messages(messages)
+        if fast_tool:
+            print(f"[LLM] fast read-only planner route: {fast_tool}")
+
         prompt_parts = []
         for message in messages:
             role = message.get("role", "user")
