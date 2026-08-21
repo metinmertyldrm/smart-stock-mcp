@@ -34,6 +34,8 @@ The chat smoke test asserts that:
 
 The smoke conversation is deleted after the test.
 
+The current LLM Host allows the synchronous Ollama generation call up to 300 seconds. The smoke client therefore allows up to 330 seconds for the optional chat request and does not immediately submit a second chat request after a timeout. This prevents an overlapping retry from masking the original slow generation on CPU-bound local machines.
+
 ## Custom ports / URLs
 
 The defaults match `docker-compose.yml`:
