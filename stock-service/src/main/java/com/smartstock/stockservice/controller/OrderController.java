@@ -8,6 +8,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 
 @RestController
@@ -55,12 +56,15 @@ public class OrderController {
         } catch (IllegalArgumentException e) {
             return ResponseEntity.notFound().build();
         } catch (DeliveryNotReadyException e) {
+            String expectedDeliveryDate = e.getExpectedDeliveryDate() == null
+                    ? null
+                    : e.getExpectedDeliveryDate().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
             return ResponseEntity.status(409).body(new OrderErrorResponse(
-                    e.getMessage(), e.getExpectedDeliveryDate()));
+                    e.getMessage(), expectedDeliveryDate));
         } catch (IllegalStateException e) {
             return ResponseEntity.badRequest().body(new OrderErrorResponse(e.getMessage(), null));
         }
     }
 
-    public record OrderErrorResponse(String detail, java.time.LocalDateTime expectedDeliveryDate) {}
+    public record OrderErrorResponse(String detail, String expectedDeliveryDate) {}
 }
