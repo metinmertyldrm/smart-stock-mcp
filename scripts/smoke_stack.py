@@ -25,6 +25,7 @@ class SmokeConfig:
     ollama_url: str
     model: str
     timeout: float
+    chat_timeout: float
     retries: int
     retry_delay: float
     chat: bool
@@ -197,7 +198,7 @@ def check_read_only_chat(config: SmokeConfig) -> None:
             f"{config.llm_url}/api/chat",
             payload={"conversationId": conversation_id, "message": "Stokta olmayan ürünleri listele."},
             headers=headers,
-            timeout=max(config.timeout, 330.0),
+            timeout=config.chat_timeout,
         )
         if status != 200 or not isinstance(result, dict):
             raise SmokeFailure("Read-only chat returned an unexpected response")
@@ -226,6 +227,7 @@ def parse_args(argv: list[str] | None = None) -> SmokeConfig:
     parser.add_argument("--ollama-url", default=os.getenv("SMOKE_OLLAMA_URL", "http://localhost:11434"))
     parser.add_argument("--model", default=os.getenv("OLLAMA_MODEL", "qwen3:8b"))
     parser.add_argument("--timeout", type=float, default=10.0)
+    parser.add_argument("--chat-timeout", type=float, default=float(os.getenv("SMOKE_CHAT_TIMEOUT", "630")))
     parser.add_argument("--retries", type=int, default=12)
     parser.add_argument("--retry-delay", type=float, default=5.0)
     parser.add_argument("--chat", action="store_true", help="also run one real read-only LLM + MCP turn")
@@ -234,6 +236,8 @@ def parse_args(argv: list[str] | None = None) -> SmokeConfig:
         parser.error("--retries must be at least 1")
     if args.timeout <= 0:
         parser.error("--timeout must be greater than zero")
+    if args.chat_timeout <= 0:
+        parser.error("--chat-timeout must be greater than zero")
     if args.retry_delay < 0:
         parser.error("--retry-delay cannot be negative")
     return SmokeConfig(
@@ -243,6 +247,7 @@ def parse_args(argv: list[str] | None = None) -> SmokeConfig:
         ollama_url=args.ollama_url.rstrip("/"),
         model=args.model,
         timeout=args.timeout,
+        chat_timeout=args.chat_timeout,
         retries=args.retries,
         retry_delay=args.retry_delay,
         chat=args.chat,
@@ -263,9 +268,9 @@ def main(argv: list[str] | None = None) -> int:
         for label, check in checks:
             with_retries(label, check, config.retries, config.retry_delay)
         if config.chat:
-            # The LLM host currently performs a synchronous Ollama request with a
-            # 300-second read timeout. A client-side timeout must not trigger a
-            # second overlapping chat request while the first one is still running.
+            # The host may need several minutes for CPU-only inference. Chat is
+            # intentionally attempted once so a client timeout cannot overlap a
+            # still-running server-side generation.
             with_retries("Read-only LLM chat", lambda: check_read_only_chat(config), 1, config.retry_delay)
     except SmokeFailure as exc:
         print(f"\n[FAIL] {exc}", file=sys.stderr)
