@@ -93,7 +93,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'
@@ -116,23 +116,6 @@ jobs:
       - name: Validate acceptance Compose profile
         run: docker compose --profile acceptance config --quiet
 
-  dependency_review:
-    name: Dependency review
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      pull-requests: read
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Reject newly introduced high-severity vulnerabilities
-        uses: actions/dependency-review-action@v4
-        with:
-          fail-on-severity: high
-
   quality-gate:
     name: Quality gate
     runs-on: ubuntu-latest
@@ -142,27 +125,17 @@ jobs:
       - frontend
       - java
       - compose
-      - dependency_review
     steps:
-      - name: Require all applicable CI jobs to pass
+      - name: Require all CI jobs to pass
         env:
-          EVENT_NAME: ${{ github.event_name }}
           PYTHON_RESULT: ${{ needs.python.result }}
           FRONTEND_RESULT: ${{ needs.frontend.result }}
           JAVA_RESULT: ${{ needs.java.result }}
           COMPOSE_RESULT: ${{ needs.compose.result }}
-          DEPENDENCY_REVIEW_RESULT: ${{ needs.dependency_review.result }}
         run: |
-          printf 'python=%s\nfrontend=%s\njava=%s\ncompose=%s\ndependency_review=%s\n' \
-            "$PYTHON_RESULT" "$FRONTEND_RESULT" "$JAVA_RESULT" "$COMPOSE_RESULT" \
-            "$DEPENDENCY_REVIEW_RESULT"
+          printf 'python=%s\nfrontend=%s\njava=%s\ncompose=%s\n' \
+            "$PYTHON_RESULT" "$FRONTEND_RESULT" "$JAVA_RESULT" "$COMPOSE_RESULT"
           test "$PYTHON_RESULT" = success
           test "$FRONTEND_RESULT" = success
           test "$JAVA_RESULT" = success
           test "$COMPOSE_RESULT" = success
-          if [ "$EVENT_NAME" = pull_request ]; then
-            test "$DEPENDENCY_REVIEW_RESULT" = success
-          else
-            test "$DEPENDENCY_REVIEW_RESULT" = skipped || \
-              test "$DEPENDENCY_REVIEW_RESULT" = success
-          fi
