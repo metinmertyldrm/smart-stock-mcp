@@ -197,7 +197,7 @@ def check_read_only_chat(config: SmokeConfig) -> None:
             f"{config.llm_url}/api/chat",
             payload={"conversationId": conversation_id, "message": "Stokta olmayan ürünleri listele."},
             headers=headers,
-            timeout=max(config.timeout, 180.0),
+            timeout=max(config.timeout, 330.0),
         )
         if status != 200 or not isinstance(result, dict):
             raise SmokeFailure("Read-only chat returned an unexpected response")
@@ -263,7 +263,10 @@ def main(argv: list[str] | None = None) -> int:
         for label, check in checks:
             with_retries(label, check, config.retries, config.retry_delay)
         if config.chat:
-            with_retries("Read-only LLM chat", lambda: check_read_only_chat(config), 2, config.retry_delay)
+            # The LLM host currently performs a synchronous Ollama request with a
+            # 300-second read timeout. A client-side timeout must not trigger a
+            # second overlapping chat request while the first one is still running.
+            with_retries("Read-only LLM chat", lambda: check_read_only_chat(config), 1, config.retry_delay)
     except SmokeFailure as exc:
         print(f"\n[FAIL] {exc}", file=sys.stderr)
         return 1
