@@ -1,12 +1,16 @@
-FROM node:20-alpine AS build
+FROM node:20-bookworm-slim AS build
 WORKDIR /app
 
 COPY package.json package-lock.json ./
-# The production image needs a production bundle, but building that bundle
-# requires devDependencies such as TypeScript and Vite. Explicitly include
-# them so local npm/Docker configuration cannot omit `tsc` or `vite`.
+# Building the production bundle requires devDependencies such as TypeScript
+# and Vite. Use the Debian-based Node image for a more stable npm install on
+# Docker Desktop and explicitly verify the expected build executables exist.
 ENV NODE_ENV=development
-RUN npm ci --include=dev
+RUN node --version \
+    && npm --version \
+    && npm ci --include=dev \
+    && test -x node_modules/.bin/tsc \
+    && test -x node_modules/.bin/vite
 
 COPY . .
 
