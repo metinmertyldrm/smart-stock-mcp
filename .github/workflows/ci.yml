@@ -47,6 +47,9 @@ jobs:
           python -m unittest discover -s llm-host -p 'test_*.py'
           python -m unittest discover -s scripts -p 'test_*.py'
 
+      - name: Run golden AI evaluation
+        run: python llm-host/golden_eval.py
+
       - name: Compile Python modules
         run: |
           python -m py_compile llm-host/*.py
@@ -66,7 +69,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '20'
           cache: npm
