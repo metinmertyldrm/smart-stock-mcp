@@ -1,10 +1,14 @@
-"""Sistem promptunun Ollama tarafindan kac token sayildigini olcer.
+"""Sistem promptunun boyutunu ve istege bagli olarak Ollama token sayimini olcer.
 
-Kullanim (llm-host klasorunden, venv aktifken):
+Kullanim (llm-host klasorunden):
+    python measure_prompt.py --offline
     python measure_prompt.py
 
-Backend'e, uvicorn'a veya web arayuzune gerek yoktur; yalnizca Ollama calisiyor olmalidir.
+`--offline` modeli calistirmadan prompt karakter sayisini ve kaba token tahminini
+verir. Normal mod Ollama'ya num_predict=1 ile gidip gercek prompt_eval_count degerini
+okur.
 """
+import argparse
 import importlib.util
 import json
 import os
@@ -53,12 +57,11 @@ def _ensure_mcp_stubs():
 
 def _load_tools(server_dir, module_alias):
     """Bir MCP sunucusunun tools.py dosyasindaki tool tanimlarini okur."""
-    # Her sunucunun kendi 'services' modulu var; onceki import'u temizle.
     sys.modules.pop("services", None)
     sys.path.insert(0, server_dir)
     try:
         try:
-            import services  # noqa: F401  (gercek modul varsa kullanilir)
+            import services  # noqa: F401
         except Exception:
             stub = types.ModuleType("services")
             for cls_name in ("ProductService", "MarketplaceService"):
@@ -78,7 +81,23 @@ def _load_tools(server_dir, module_alias):
         sys.modules.pop("services", None)
 
 
-def main():
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Measure Smart Stock planning prompt size")
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="only build the prompt; do not call Ollama",
+    )
+    parser.add_argument(
+        "--question",
+        default="Kritik urunler icin en hizli satin alma planini hazirla.",
+        help="sample user request appended to the system prompt",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
     _ensure_mcp_stubs()
     sys.path.insert(0, LLM_HOST_DIR)
 
@@ -91,19 +110,9 @@ def main():
     )
 
     system_prompt = get_execution_plan_prompt(tools)
-    ornek_soru = "Kritik urunler icin en hizli satin alma planini hazirla."
-
-    # LLMService.generate ile ayni duzlestirme
-    prompt = f"system: {system_prompt}\nuser: {ornek_soru}\nassistant:"
+    prompt = f"system: {system_prompt}\nuser: {args.question}\nassistant:"
 
     service = LLMService()
-    payload = {
-        "model": service.model,
-        "prompt": prompt,
-        "stream": False,
-        "think": False,
-        "options": {"num_predict": 1, "num_ctx": service.num_ctx},
-    }
 
     print("=" * 58)
     print("PROMPT OLCUMU")
@@ -111,9 +120,25 @@ def main():
     print(f"Tool sayisi            : {len(tools)}")
     print(f"Sistem promptu         : {len(system_prompt)} karakter")
     print(f"Gonderilen tam prompt  : {len(prompt)} karakter")
+    print(f"Kaba token tahmini     : ~{len(prompt) // 4}")
     print(f"Model                  : {service.model}")
     print(f"num_ctx (ayarli)       : {service.num_ctx}")
     print("-" * 58)
+
+    if args.offline:
+        pay = 100 * (len(prompt) // 4) / service.num_ctx
+        print("MOD                    : OFFLINE (Ollama cagrilmadi)")
+        print(f"Tahmini context doluluk: %{pay:.0f}")
+        print("=" * 58)
+        return 0
+
+    payload = {
+        "model": service.model,
+        "prompt": prompt,
+        "stream": False,
+        "think": False,
+        "options": {"num_predict": 1, "num_ctx": service.num_ctx},
+    }
 
     import requests
     try:
@@ -131,7 +156,7 @@ def main():
         print(" ", ", ".join(sorted(data.keys())))
         return 1
 
-    print(f"OLLAMA'NIN SAYDIGI     : {counted} token   <-- aradigimiz sayi")
+    print(f"OLLAMA'NIN SAYDIGI     : {counted} token")
     print("-" * 58)
     if counted >= service.num_ctx:
         print(f"SONUC: SIGMIYOR  ({counted} >= {service.num_ctx})")

@@ -1,4 +1,5 @@
 """Persistent HTTP transport for the Smart Stock agent."""
+import asyncio
 import json
 import logging
 import os
@@ -219,6 +220,10 @@ class AgentApplication:
         self.store = store or ConversationStore()
         self.states = {}
 
+    async def _generate(self, messages):
+        """Run the blocking Ollama HTTP client outside FastAPI's event loop."""
+        return await asyncio.to_thread(self.llm.generate, messages)
+
     async def chat(self, conversation_id, message, owner_id="anonymous"):
         started_at = now()
         started_clock = time.perf_counter()
@@ -242,7 +247,7 @@ class AgentApplication:
         names = {t.name for t in tools}
         cached = {k: v for k, v in {"last_cheapest_plan": state.last_cheapest_plan, "last_fastest_plan": state.last_fastest_plan}.items() if is_plan_valid(v)}
         system_prompt = get_execution_plan_prompt(tools, state.last_plan, state, cached)
-        raw = self.llm.generate([{"role": "system", "content": system_prompt}, *state.history, {"role": "user", "content": message}])
+        raw = await self._generate([{"role": "system", "content": system_prompt}, *state.history, {"role": "user", "content": message}])
         repaired = False
         repair_summary = None
         try:
@@ -250,7 +255,7 @@ class AgentApplication:
             validate_plan_against_state(plan, state)
         except ValueError as exc:
             # Dogrulama hatasi execute_plan'den ONCE olusur; onarim dongusu buraya da uygulanmali.
-            plan = self.repair_invalid_plan(system_prompt, message, raw, exc, state, conversation_id)
+            plan = await self.repair_invalid_plan(system_prompt, message, raw, exc, state, conversation_id)
             if plan is None:
                 return self.clarification_response(conversation_id, message, permission, state, exc)
             repaired = True
@@ -340,7 +345,7 @@ class AgentApplication:
         goal = plan.get("goal", "").upper()
         if execution.get("success") and goal == "REASON":
             reasoning_data = clean_tool_results_for_reasoning(execution.get("results", {}))
-            answer = self.llm.generate([{"role": "system", "content": get_reasoning_prompt(message, reasoning_data)}]).strip()
+            answer = (await self._generate([{"role": "system", "content": get_reasoning_prompt(message, reasoning_data)}])).strip()
         elif goal == "CHAT":
             answer = final.get("chat_answer", "")
         elif received_step_id is not None:
@@ -451,11 +456,11 @@ class AgentApplication:
         self.store.add_message(conversation_id, "assistant", answer, "success" if execution.get("success") else "failed", response)
         return response
 
-    def repair_invalid_plan(self, system_prompt, message, raw, error, state, conversation_id):
+    async def repair_invalid_plan(self, system_prompt, message, raw, error, state, conversation_id):
         """Plan dogrulamadan gecemediginde modele hatayi geri verip bir kez daha dener."""
         logger.info("Plan validation failed (%s); attempting repair conversation_id=%s", error, conversation_id)
         try:
-            repaired_raw = self.llm.generate([
+            repaired_raw = await self._generate([
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": build_repair_instruction(
                     message,
@@ -528,7 +533,7 @@ class AgentApplication:
         logger.info("Plan failed at step=%s error=%s; attempting repair conversation_id=%s",
                     execution.get("failed_step"), execution.get("error"), conversation_id)
         try:
-            repaired_raw = self.llm.generate([
+            repaired_raw = await self._generate([
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": build_repair_instruction(message, plan, execution, plan.get("goal", "").upper())},
             ])
