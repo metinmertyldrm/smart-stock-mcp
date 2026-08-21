@@ -58,11 +58,13 @@ The stack starts:
 
 | Service | Default host port |
 | --- | ---: |
-| PostgreSQL | 5432 |
+| PostgreSQL | 5433 |
 | Spring Boot stock service | 8081 |
 | Ollama | 11434 |
 | LLM host HTTP API | 8000 |
 | nginx web UI | 5173 |
+
+Docker PostgreSQL uses host port `5433` by default to avoid colliding with a normal local PostgreSQL installation on `5432`. Inside the Compose network, Spring still connects to `postgres:5432`.
 
 The first startup can take several minutes because the model bootstrap job downloads `qwen3:8b` into a persistent Ollama volume.
 
@@ -197,7 +199,7 @@ With Docker, start the normal stack plus the isolated acceptance Spring service:
 docker compose --profile acceptance up --build -d
 ```
 
-This creates `smart_stock_acceptance` if necessary and exposes the acceptance Spring service on port 8082. The normal `smart_stock` database remains separate.
+This creates `smart_stock_acceptance` if necessary and exposes the acceptance Spring service on port 8082. The normal `smart_stock` database remains separate. When the acceptance reset script is run from the host against Docker PostgreSQL, use host port `5433` unless `POSTGRES_PORT` was changed.
 
 For a fully manual setup, create `smart_stock_acceptance` once and start a second Spring process:
 
@@ -214,7 +216,7 @@ mvn spring-boot:run
 
 The reset wrapper derives the target from the same `DB_URL` and refuses database names that do not end in `_acceptance`.
 
-Example repeatable write scenario:
+Example repeatable write scenario for the manual topology:
 
 ```powershell
 cd llm-host
@@ -227,6 +229,8 @@ python acceptance_runner.py `
   --runs 3 `
   --reset-command 'powershell -NoProfile -File "..\stock-service\scripts\reset-acceptance.ps1"'
 ```
+
+For the equivalent Docker acceptance reset command and port mapping, see [`docs/docker.md`](docs/docker.md).
 
 Multiple read-only scenarios can be selected without a reset command:
 
@@ -287,6 +291,8 @@ After starting the complete stack:
 
 ```bash
 python -m unittest discover -s llm-host -p 'test_*.py'
+python -m unittest discover -s stock-mcp -p 'test_*.py'
+python -m unittest discover -s marketplace-mcp -p 'test_*.py'
 python -m py_compile llm-host/*.py stock-mcp/*.py marketplace-mcp/*.py
 ```
 
