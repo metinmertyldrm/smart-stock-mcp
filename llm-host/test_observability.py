@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from observability import (
     MetricsRegistry,
+    correlate_response_payload,
     current_request_id,
     emit_event,
     normalize_route,
@@ -41,6 +42,23 @@ class RequestCorrelationTest(unittest.TestCase):
         )
         self.assertEqual(normalize_route("/api/health"), "/api/health")
 
+    def test_chat_telemetry_receives_http_request_id(self):
+        payload = {
+            "telemetry": {
+                "executionId": "exec-1",
+                "missingFields": ["HTTP request ID", "tool sürümü"],
+            }
+        }
+        changed = correlate_response_payload(payload, "req-456")
+        self.assertTrue(changed)
+        self.assertEqual(payload["telemetry"]["requestId"], "req-456")
+        self.assertEqual(payload["telemetry"]["missingFields"], ["tool sürümü"])
+
+    def test_payload_without_telemetry_is_left_alone(self):
+        payload = {"status": "ok"}
+        self.assertFalse(correlate_response_payload(payload, "req-456"))
+        self.assertEqual(payload, {"status": "ok"})
+
 
 class MetricsRegistryTest(unittest.TestCase):
     def test_http_counts_latency_and_server_errors_are_aggregated(self):
@@ -65,6 +83,49 @@ class MetricsRegistryTest(unittest.TestCase):
         self.assertEqual(conversation["count"], 2)
         self.assertEqual(conversation["durationMsAverage"], 20.0)
         self.assertEqual(conversation["durationMsMax"], 30.0)
+
+    def test_chat_and_tool_metrics_use_existing_response_trace(self):
+        registry = MetricsRegistry()
+        registry.record_chat_response(
+            {
+                "conversationId": "conv-1",
+                "succeeded": True,
+                "plan": {"goal": "INFO"},
+                "explanation": {"repaired": True},
+                "telemetry": {"durationMs": 120.0},
+                "trace": [
+                    {"tool": "list_low_stock", "status": "success", "durationMs": 25.0},
+                    {"tool": "create_procurement_plan", "status": "success", "durationMs": 40.0},
+                ],
+            }
+        )
+        registry.record_chat_response(
+            {
+                "conversationId": "conv-2",
+                "succeeded": False,
+                "plan": {"goal": "PLAN"},
+                "explanation": {"repaired": False},
+                "telemetry": {"durationMs": 80.0},
+                "trace": [
+                    {"tool": "list_low_stock", "status": "failed", "durationMs": 10.0},
+                ],
+            }
+        )
+
+        snapshot = registry.snapshot()
+        self.assertEqual(snapshot["chat"]["total"], 2)
+        self.assertEqual(snapshot["chat"]["succeeded"], 1)
+        self.assertEqual(snapshot["chat"]["failed"], 1)
+        self.assertEqual(snapshot["chat"]["repaired"], 1)
+        self.assertEqual(snapshot["chat"]["durationMsAverage"], 100.0)
+        self.assertEqual(snapshot["chat"]["goals"], {"INFO": 1, "PLAN": 1})
+
+        low_stock = [item for item in snapshot["tools"] if item["tool"] == "list_low_stock"]
+        self.assertEqual(len(low_stock), 2)
+        successful = next(item for item in low_stock if item["status"] == "success")
+        failed = next(item for item in low_stock if item["status"] == "failed")
+        self.assertEqual(successful["durationMsAverage"], 25.0)
+        self.assertEqual(failed["durationMsAverage"], 10.0)
 
     def test_active_request_counter_never_goes_negative(self):
         registry = MetricsRegistry()
