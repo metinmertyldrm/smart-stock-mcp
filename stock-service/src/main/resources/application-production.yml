@@ -1,0 +1,31 @@
+server:
+  forward-headers-strategy: framework
+
+app:
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS}
+
+spring:
+  datasource:
+    url: ${DB_URL}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: false
+    validate-on-migrate: true
+
+  jpa:
+    hibernate:
+      # Flyway owns production schema changes. Hibernate only verifies that the
+      # migrated schema still matches the entities.
+      ddl-auto: validate
+    show-sql: false
+    defer-datasource-initialization: false
+
+  sql:
+    init:
+      # Development/demo seed data must never run in production.
+      mode: never

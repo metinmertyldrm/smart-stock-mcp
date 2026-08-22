@@ -29,6 +29,9 @@ The LLM proposes execution plans, but business rules and write-safety controls r
 - React/Vite operations dashboard.
 - Server-issued anonymous bearer sessions for the browser-facing LLM API.
 - Read-only browser stock gateway so mutation endpoints remain on the internal Docker network.
+- Separate fail-closed production Compose topology with non-root/read-only application containers.
+- Flyway-owned production schema migrations with Hibernate validation.
+- Tag-gated release workflow that publishes versioned application images and immutable digests.
 
 ## Quick start with Docker Compose
 
@@ -92,6 +95,12 @@ Run deterministic security checks:
 python scripts/security_smoke.py
 ```
 
+Run observability checks:
+
+```bash
+python scripts/observability_smoke.py
+```
+
 Run the normal full-stack smoke, including one real read-only LLM + MCP turn:
 
 ```bash
@@ -113,6 +122,31 @@ docker compose down -v
 The default `DB_PASSWORD=postgres` in Compose is strictly a local-development convenience. Override it in `.env` for any shared environment. This Compose stack is a development/demo topology, not a production deployment configuration.
 
 See [`docs/security.md`](docs/security.md) for the trust boundaries, bearer-session limitations and deployment warnings.
+
+## Production deployment
+
+Production uses the separate `docker-compose.prod.yml` contract. Do not convert the development Compose file into a public deployment by simply changing its port bindings.
+
+Start by copying `.env.production.example`, replacing the weak/placeholder values and resolving real PostgreSQL/Ollama repository digests. Then run the fail-closed checks before startup:
+
+```bash
+python scripts/validate_production_env.py --env-file .env.production
+python scripts/production_smoke.py --env-file .env.production --config-only
+```
+
+The production topology keeps PostgreSQL, stock-service, llm-host and Ollama internal. Only the application gateway is host-facing and it binds to loopback by default so a trusted HTTPS reverse proxy can sit in front of it.
+
+The production Spring profile uses Flyway versioned migrations and Hibernate `ddl-auto=validate`; development seed data is disabled. Hardened application containers run non-root with read-only root filesystems, dropped Linux capabilities and `no-new-privileges`.
+
+After startup, run:
+
+```bash
+python scripts/production_smoke.py --env-file .env.production
+```
+
+Production infrastructure hardening does **not** replace user identity/RBAC. The current bearer sessions are anonymous isolation credentials. Until a real identity layer exists, use a trusted audience or upstream authentication/access control before exposing the service broadly.
+
+See [`docs/production.md`](docs/production.md) for TLS, migrations, backup/restore, upgrades and rollback. See [`docs/release.md`](docs/release.md) for the guarded `vX.Y.Z` release flow and application image manifests.
 
 ## Docker acceptance profile
 
@@ -328,8 +362,10 @@ The Spring Boot service provides inventory, incoming-order and marketplace REST 
 
 The secured LLM host provides endpoints including:
 
-- `GET /api/health` (public),
+- `GET /api/health` (public liveness),
+- `GET /api/ready` (public side-effect-free readiness),
 - `POST /api/session` (public session issuance),
+- `GET /api/metrics` (Bearer session required),
 - `POST /api/chat` (Bearer session required),
 - conversation listing/detail/deletion (Bearer session required),
 - conversation confirmation endpoints (Bearer session required).
@@ -357,7 +393,8 @@ After starting the complete stack:
 
 ```bash
 python -m unittest discover -s llm-host -p 'test_*.py'
-python -m py_compile llm-host/*.py stock-mcp/*.py marketplace-mcp/*.py
+python -m unittest discover -s scripts -p 'test_*.py'
+python -m py_compile llm-host/*.py stock-mcp/*.py marketplace-mcp/*.py scripts/*.py
 python llm-host/golden_eval.py
 ```
 
@@ -365,6 +402,19 @@ python llm-host/golden_eval.py
 
 ```bash
 python scripts/security_smoke.py
+```
+
+### Observability smoke
+
+```bash
+python scripts/observability_smoke.py
+```
+
+### Production contract
+
+```bash
+python scripts/validate_production_env.py --env-file .env.production
+python scripts/production_smoke.py --env-file .env.production --config-only
 ```
 
 ### Frontend
@@ -400,16 +450,17 @@ git status
 
 ## Environment and secrets
 
-- Local `.env` files are ignored.
+- Local `.env` and `.env.production` files are ignored; only documented example templates are tracked.
 - Runtime SQLite conversation and anonymous-session databases are ignored.
 - Generated acceptance reports are ignored.
 - `node_modules`, Vite output, coverage and common Python caches are ignored.
 - Server-side secrets must never be exposed through `VITE_*` variables.
 - Opaque browser bearer tokens are credentials even though they represent anonymous sessions.
-- The Docker Compose defaults are intended for local development only.
+- Development Compose defaults are intended for local development only.
+- Production deployment rejects weak credentials and mutable external image references before startup.
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for contribution and verification expectations.
 
 ## Planned improvements
 
-Potential future work includes real marketplace provider integrations, demand forecasting, notifications, CI/CD, stronger deployment automation and additional production hardening.
+Potential future work includes real user identity/RBAC, marketplace provider integrations, demand forecasting, notifications, mobile clients and persistent/distributed observability export.

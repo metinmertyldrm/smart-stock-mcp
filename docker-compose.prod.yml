@@ -1,0 +1,176 @@
+name: smart-stock-prod
+
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:?POSTGRES_IMAGE must be digest-pinned}
+    environment:
+      POSTGRES_DB: ${DB_NAME:-smart_stock}
+      POSTGRES_USER: ${DB_USERNAME:?DB_USERNAME is required}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+    volumes:
+      - postgres-prod-data:/var/lib/postgresql/data
+    networks:
+      - data-net
+    restart: unless-stopped
+    mem_limit: ${POSTGRES_MEMORY_LIMIT:-1g}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  stock-service:
+    build:
+      context: ./stock-service
+      dockerfile: Dockerfile.prod
+    environment:
+      SPRING_PROFILES_ACTIVE: production
+      DB_URL: jdbc:postgresql://postgres:5432/${DB_NAME:-smart_stock}
+      DB_USERNAME: ${DB_USERNAME:?DB_USERNAME is required}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      SERVER_PORT: 8081
+      CORS_ALLOWED_ORIGINS: ${PUBLIC_ORIGIN:?PUBLIC_ORIGIN is required}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - data-net
+      - gateway-net
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+    cpus: ${STOCK_CPU_LIMIT:-1.0}
+    mem_limit: ${STOCK_MEMORY_LIMIT:-768m}
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8081/api/products >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  ollama:
+    image: ${OLLAMA_IMAGE:?OLLAMA_IMAGE must be digest-pinned}
+    volumes:
+      - ollama-prod-data:/root/.ollama
+    networks:
+      - model-net
+    restart: unless-stopped
+    mem_limit: ${OLLAMA_MEMORY_LIMIT:-8g}
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+      start_period: 20s
+
+  ollama-init:
+    image: ${OLLAMA_IMAGE:?OLLAMA_IMAGE must be digest-pinned}
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:?OLLAMA_MODEL is required}
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["ollama pull $$OLLAMA_MODEL"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    networks:
+      - model-net
+    restart: "no"
+
+  llm-host:
+    build:
+      context: .
+      dockerfile: llm-host/Dockerfile.prod
+    environment:
+      STOCK_SERVICE_URL: http://stock-service:8081
+      OLLAMA_URL: http://ollama:11434/api/generate
+      OLLAMA_MODEL: ${OLLAMA_MODEL:?OLLAMA_MODEL is required}
+      OLLAMA_CONNECT_TIMEOUT: ${OLLAMA_CONNECT_TIMEOUT:-20}
+      OLLAMA_READ_TIMEOUT: ${OLLAMA_READ_TIMEOUT:-300}
+      LLM_CORS_ALLOWED_ORIGINS: ${PUBLIC_ORIGIN:?PUBLIC_ORIGIN is required}
+      LLM_CONVERSATIONS_DB: /data/conversations.db
+      LLM_SESSIONS_DB: /data/sessions.db
+      LLM_SESSION_TTL_SECONDS: ${LLM_SESSION_TTL_SECONDS:-86400}
+    depends_on:
+      stock-service:
+        condition: service_healthy
+      ollama-init:
+        condition: service_completed_successfully
+    volumes:
+      - llm-prod-data:/data
+    networks:
+      - gateway-net
+      - model-net
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+    cpus: ${LLM_CPU_LIMIT:-2.0}
+    mem_limit: ${LLM_MEMORY_LIMIT:-2g}
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/ready', timeout=3)\" >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  web-ui:
+    build:
+      context: ./web-ui
+      dockerfile: Dockerfile.prod
+      args:
+        VITE_API_BASE_URL: /stock
+        VITE_LLM_HOST_URL: /llm
+    ports:
+      - "${WEB_BIND_ADDRESS:-127.0.0.1}:${WEB_PORT:-8080}:8080"
+    depends_on:
+      llm-host:
+        condition: service_healthy
+    networks:
+      - gateway-net
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m,mode=1777
+      - /var/cache/nginx:rw,noexec,nosuid,size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+    cpus: ${WEB_CPU_LIMIT:-0.50}
+    mem_limit: ${WEB_MEMORY_LIMIT:-256m}
+    stop_grace_period: 15s
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+networks:
+  data-net:
+    driver: bridge
+  gateway-net:
+    driver: bridge
+  model-net:
+    driver: bridge
+
+volumes:
+  postgres-prod-data:
+  ollama-prod-data:
+  llm-prod-data:
