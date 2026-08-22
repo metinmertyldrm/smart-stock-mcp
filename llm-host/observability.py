@@ -96,6 +96,45 @@ def correlate_response_payload(payload: Any, request_id: str) -> bool:
     return True
 
 
+def persist_correlated_chat_response(payload: Any, store: Any) -> bool:
+    """Persist middleware-added request correlation into its assistant audit row.
+
+    The orchestration layer stores the response before the outer HTTP middleware
+    attaches ``requestId``. Matching on both conversation and execution ID keeps
+    concurrent chats from overwriting one another.
+    """
+    if not isinstance(payload, dict):
+        return False
+    conversation_id = payload.get("conversationId")
+    telemetry = payload.get("telemetry")
+    execution_id = telemetry.get("executionId") if isinstance(telemetry, dict) else None
+    db = getattr(store, "db", None)
+    if not conversation_id or not execution_id or db is None:
+        return False
+
+    rows = db.execute(
+        "SELECT id,response_json FROM messages "
+        "WHERE conversation_id=? AND role='assistant' AND response_json IS NOT NULL "
+        "ORDER BY created_at DESC,id DESC LIMIT 10",
+        (conversation_id,),
+    ).fetchall()
+    for row in rows:
+        try:
+            stored = json.loads(row["response_json"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        stored_telemetry = stored.get("telemetry") if isinstance(stored, dict) else None
+        if not isinstance(stored_telemetry, dict) or stored_telemetry.get("executionId") != execution_id:
+            continue
+        db.execute(
+            "UPDATE messages SET response_json=? WHERE id=?",
+            (json.dumps(payload, ensure_ascii=False), row["id"]),
+        )
+        db.commit()
+        return True
+    return False
+
+
 class MetricsRegistry:
     """Small process-local metrics registry with bounded route/tool labels."""
 
