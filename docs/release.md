@@ -66,11 +66,21 @@ Before publishing anything, the workflow re-verifies:
 - absence of production demo seed rows,
 - frontend lint/tests/build.
 
-This is deliberately redundant with PR CI. Tags are mutable administrative actions outside the pull-request flow, so the release gate does not simply assume a previous CI run was the right one.
+This is deliberately redundant with PR CI. Tags are administrative actions outside the pull-request flow, so the release gate does not simply assume a previous CI run was the right one.
+
+The release workflow has `contents: write` and `packages: write`; every reusable GitHub Action in that privileged workflow is therefore pinned to a full reviewed commit SHA rather than a movable `@vN` reference.
 
 ## Published application images
 
-After the gate passes, the workflow builds the hardened production Dockerfiles and pushes three images to GitHub Container Registry:
+After the gate passes, the workflow builds the hardened production Dockerfiles. Each build is first pushed only under its source-commit tag:
+
+```text
+ghcr.io/<owner>/smart-stock-stock-service:sha-<full-git-commit>
+ghcr.io/<owner>/smart-stock-llm-host:sha-<full-git-commit>
+ghcr.io/<owner>/smart-stock-web-ui:sha-<full-git-commit>
+```
+
+Only after **all three** image builds have succeeded are the verified digests promoted to the release aliases:
 
 ```text
 ghcr.io/<owner>/smart-stock-stock-service:vX.Y.Z
@@ -78,13 +88,7 @@ ghcr.io/<owner>/smart-stock-llm-host:vX.Y.Z
 ghcr.io/<owner>/smart-stock-web-ui:vX.Y.Z
 ```
 
-Each image also receives an immutable source tag:
-
-```text
-sha-<full-git-commit>
-```
-
-The workflow never publishes a `latest` tag. Deployments should record and preferably pin the returned registry digest.
+The workflow verifies those promoted aliases before creating the GitHub Release. It never publishes a `latest` application tag. Deployments should record and preferably use the returned registry digest rather than relying only on a tag.
 
 PostgreSQL and Ollama are upstream runtime dependencies, not Smart Stock application images. Their production digests remain explicit deployment inputs in `.env.production`.
 
@@ -101,9 +105,11 @@ Treat the manifest as the release-to-image mapping used by deployment and rollba
 
 ## Failed release
 
-If any verification or image build fails, no GitHub Release is created. Do not move/reuse a failed public version tag after consumers may have observed it. Fix the problem on `main`, choose the next appropriate patch/minor version, and tag the corrected commit.
+If verification fails, no application images are published. If one of the three commit-image builds/pushes fails after an earlier one succeeded, source-SHA artifacts may remain in GHCR, but version aliases are not promoted until all three builds have succeeded.
 
-If a tag was pushed accidentally and the workflow failed before any release was consumed, repository maintainers may remove it according to project policy. Avoid force-moving an existing release tag.
+If a later version-promotion or GitHub Release step fails, inspect the registry and workflow state before retrying. Do not move/reuse a failed public version tag after consumers may have observed it. Fix the problem on `main`, choose the next appropriate patch/minor version when needed, and tag the corrected commit.
+
+Avoid force-moving an existing release tag.
 
 ## Deployment after release
 
