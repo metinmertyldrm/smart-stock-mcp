@@ -113,6 +113,14 @@ def audit_compose_config(config: dict[str, Any], *, allow_public_bind: bool = Fa
         if "no-new-privileges:true" not in options:
             raise ProductionSmokeFailure(f"{name} is missing no-new-privileges")
 
+    web_healthcheck = services["web-ui"].get("healthcheck") or {}
+    health_test = web_healthcheck.get("test") or []
+    health_command = " ".join(str(value) for value in health_test)
+    if "http://127.0.0.1:8080/healthz" not in health_command:
+        raise ProductionSmokeFailure(
+            "web-ui healthcheck must probe the explicit IPv4 loopback endpoint http://127.0.0.1:8080/healthz"
+        )
+
     stock_env = services["stock-service"].get("environment") or {}
     if stock_env.get("SPRING_PROFILES_ACTIVE") != "production":
         raise ProductionSmokeFailure("stock-service is not using the production Spring profile")
