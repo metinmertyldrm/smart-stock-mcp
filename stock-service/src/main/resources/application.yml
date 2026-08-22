@@ -15,6 +15,11 @@ spring:
     password: ${DB_PASSWORD}
     driver-class-name: org.postgresql.Driver
 
+  # Development/acceptance preserve their existing Hibernate-managed schema
+  # behavior. The production profile explicitly enables versioned Flyway SQL.
+  flyway:
+    enabled: ${FLYWAY_ENABLED:false}
+
   jpa:
     hibernate:
       # Keep existing inventory and order data when the service restarts.
