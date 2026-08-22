@@ -19,7 +19,16 @@ def hardened_config():
             },
             "ollama": {"ports": []},
             "ollama-init": {"ports": []},
-            "llm-host": {**base_hardening, "ports": []},
+            "llm-host": {
+                **base_hardening,
+                "ports": [],
+                "environment": {
+                    "APP_ENV": "production",
+                    "APP_VERSION": "local-production",
+                    "OLLAMA_MODEL": "qwen3:8b",
+                    "LLM_MODEL": "qwen3:8b",
+                },
+            },
             "web-ui": {
                 **base_hardening,
                 "ports": [{"host_ip": "127.0.0.1", "published": "8080", "target": 8080}],
@@ -72,6 +81,18 @@ class ProductionComposeAuditTest(unittest.TestCase):
             "CMD-SHELL",
             "wget -qO- http://localhost:8080/healthz >/dev/null || exit 1",
         ]
+        with self.assertRaises(ProductionSmokeFailure):
+            audit_compose_config(config)
+
+    def test_llm_host_must_report_production_environment(self):
+        config = hardened_config()
+        config["services"]["llm-host"]["environment"]["APP_ENV"] = "development"
+        with self.assertRaises(ProductionSmokeFailure):
+            audit_compose_config(config)
+
+    def test_llm_model_telemetry_must_match_runtime_model(self):
+        config = hardened_config()
+        config["services"]["llm-host"]["environment"]["LLM_MODEL"] = "other-model"
         with self.assertRaises(ProductionSmokeFailure):
             audit_compose_config(config)
 
