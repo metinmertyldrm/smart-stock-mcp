@@ -55,7 +55,7 @@ jobs:
           python -m py_compile llm-host/*.py
           python -m py_compile stock-mcp/*.py
           python -m py_compile marketplace-mcp/*.py
-          python -m py_compile scripts/smoke_stack.py
+          python -m py_compile scripts/*.py
 
   frontend:
     name: Frontend lint, test and build
@@ -122,16 +122,114 @@ jobs:
       - name: Validate acceptance Compose profile
         run: docker compose --profile acceptance config --quiet
 
-  container-build:
-    name: Application container builds
+  production-contract:
+    name: Production contract and migration
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 20
+    env:
+      DB_NAME: smart_stock_prod_ci
+      DB_USERNAME: smartstock_ci
+      DB_PASSWORD: ci-production-database-secret-42x
+      PUBLIC_ORIGIN: https://stock.example.test
+      WEB_BIND_ADDRESS: 127.0.0.1
+      WEB_PORT: '18080'
+      POSTGRES_IMAGE: postgres:17@sha256:1111111111111111111111111111111111111111111111111111111111111111
+      OLLAMA_IMAGE: ollama/ollama:0.0.0@sha256:2222222222222222222222222222222222222222222222222222222222222222
+      OLLAMA_MODEL: qwen3:8b
+      LLM_SESSION_TTL_SECONDS: '86400'
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: smart_stock_prod_ci
+          POSTGRES_USER: smartstock_ci
+          POSTGRES_PASSWORD: ci-production-database-secret-42x
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U smartstock_ci -d smart_stock_prod_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build application images
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: Validate fail-closed production environment
+        run: python scripts/validate_production_env.py
+
+      - name: Audit production Compose contract
+        run: python scripts/production_smoke.py --config-only
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Build stock service with migrations
+        working-directory: stock-service
+        run: mvn -B -DskipTests package
+
+      - name: Verify fresh production database migration and Hibernate validation
+        working-directory: stock-service
+        env:
+          SPRING_PROFILES_ACTIVE: production
+          DB_URL: jdbc:postgresql://localhost:5432/smart_stock_prod_ci
+          SERVER_PORT: '18081'
+          CORS_ALLOWED_ORIGINS: https://stock.example.test
+        run: |
+          set -euo pipefail
+          java -jar target/stock-service-*.jar > /tmp/stock-production.log 2>&1 &
+          app_pid=$!
+          trap 'kill "$app_pid" 2>/dev/null || true' EXIT
+
+          ready=0
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:18081/api/products > /tmp/products.json; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "$ready" -ne 1 ]; then
+            cat /tmp/stock-production.log
+            exit 1
+          fi
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          payload = json.loads(Path('/tmp/products.json').read_text())
+          assert isinstance(payload, list), payload
+          assert payload == [], 'production migration must not load demo seed rows'
+          PY
+
+          grep -q "Started StockServiceApplication" /tmp/stock-production.log
+
+  container-build:
+    name: Application container builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build development application images
         run: docker compose build stock-service llm-host web-ui
+
+      - name: Build hardened production application images
+        run: |
+          docker build -f stock-service/Dockerfile.prod stock-service
+          docker build -f llm-host/Dockerfile.prod .
+          docker build -f web-ui/Dockerfile.prod web-ui
 
   quality-gate:
     name: Quality gate
@@ -142,6 +240,7 @@ jobs:
       - frontend
       - java
       - compose
+      - production-contract
       - container-build
     steps:
       - name: Require all CI jobs to pass
@@ -150,13 +249,15 @@ jobs:
           FRONTEND_RESULT: ${{ needs.frontend.result }}
           JAVA_RESULT: ${{ needs.java.result }}
           COMPOSE_RESULT: ${{ needs.compose.result }}
+          PRODUCTION_RESULT: ${{ needs.production-contract.result }}
           CONTAINER_BUILD_RESULT: ${{ needs.container-build.result }}
         run: |
-          printf 'python=%s\nfrontend=%s\njava=%s\ncompose=%s\ncontainer_build=%s\n' \
+          printf 'python=%s\nfrontend=%s\njava=%s\ncompose=%s\nproduction=%s\ncontainer_build=%s\n' \
             "$PYTHON_RESULT" "$FRONTEND_RESULT" "$JAVA_RESULT" "$COMPOSE_RESULT" \
-            "$CONTAINER_BUILD_RESULT"
+            "$PRODUCTION_RESULT" "$CONTAINER_BUILD_RESULT"
           test "$PYTHON_RESULT" = success
           test "$FRONTEND_RESULT" = success
           test "$JAVA_RESULT" = success
           test "$COMPOSE_RESULT" = success
+          test "$PRODUCTION_RESULT" = success
           test "$CONTAINER_BUILD_RESULT" = success
