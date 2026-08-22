@@ -11,6 +11,7 @@ from observability import (
     emit_event,
     logger,
     normalize_route,
+    persist_correlated_chat_response,
     readiness_snapshot,
     reset_request_id,
     set_request_id,
@@ -60,6 +61,42 @@ class RequestCorrelationTest(unittest.TestCase):
         self.assertTrue(changed)
         self.assertEqual(payload["telemetry"]["requestId"], "req-456")
         self.assertEqual(payload["telemetry"]["missingFields"], ["tool sürümü"])
+
+    def test_correlated_request_id_is_persisted_to_matching_audit_row(self):
+        db = sqlite3.connect(":memory:")
+        db.row_factory = sqlite3.Row
+        db.execute(
+            "CREATE TABLE messages ("
+            "id TEXT PRIMARY KEY, conversation_id TEXT, role TEXT, response_json TEXT, created_at TEXT)"
+        )
+        matching = {
+            "conversationId": "conv-1",
+            "telemetry": {"executionId": "exec-1", "missingFields": ["HTTP request ID", "tool sürümü"]},
+        }
+        other = {
+            "conversationId": "conv-1",
+            "telemetry": {"executionId": "exec-other", "missingFields": ["HTTP request ID"]},
+        }
+        db.execute(
+            "INSERT INTO messages VALUES(?,?,?,?,?)",
+            ("m1", "conv-1", "assistant", json.dumps(matching), "2026-08-22T14:00:00+00:00"),
+        )
+        db.execute(
+            "INSERT INTO messages VALUES(?,?,?,?,?)",
+            ("m2", "conv-1", "assistant", json.dumps(other), "2026-08-22T14:01:00+00:00"),
+        )
+        db.commit()
+
+        payload = json.loads(json.dumps(matching))
+        self.assertTrue(correlate_response_payload(payload, "req-789"))
+        self.assertTrue(persist_correlated_chat_response(payload, SimpleNamespace(db=db)))
+
+        stored = json.loads(db.execute("SELECT response_json FROM messages WHERE id='m1'").fetchone()[0])
+        untouched = json.loads(db.execute("SELECT response_json FROM messages WHERE id='m2'").fetchone()[0])
+        self.assertEqual(stored["telemetry"]["requestId"], "req-789")
+        self.assertEqual(stored["telemetry"]["missingFields"], ["tool sürümü"])
+        self.assertNotIn("requestId", untouched["telemetry"])
+        db.close()
 
     def test_payload_without_telemetry_is_left_alone(self):
         payload = {"status": "ok"}

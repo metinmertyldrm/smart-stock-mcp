@@ -125,6 +125,14 @@ def audit_compose_config(config: dict[str, Any], *, allow_public_bind: bool = Fa
     if stock_env.get("SPRING_PROFILES_ACTIVE") != "production":
         raise ProductionSmokeFailure("stock-service is not using the production Spring profile")
 
+    llm_env = services["llm-host"].get("environment") or {}
+    if llm_env.get("APP_ENV") != "production":
+        raise ProductionSmokeFailure("llm-host telemetry environment must be production")
+    if not str(llm_env.get("APP_VERSION") or "").strip():
+        raise ProductionSmokeFailure("llm-host telemetry application version must be set")
+    if llm_env.get("LLM_MODEL") != llm_env.get("OLLAMA_MODEL"):
+        raise ProductionSmokeFailure("llm-host telemetry model must match OLLAMA_MODEL")
+
 
 def issue_session(llm_url: str, timeout: float) -> str:
     status, body = request("POST", f"{llm_url}/api/session", timeout=timeout)

@@ -2,7 +2,7 @@ import json
 import unittest
 from unittest.mock import patch
 
-from llm import LLMService, prepare_inference_messages
+from llm import LLMService, SAFE_DRAFT_ROUTE, prepare_inference_messages
 
 
 FULL_SYSTEM = "Smart Stock & Procurement execution planner.\n" + ("x" * 12000)
@@ -49,6 +49,56 @@ class FastReadOnlyPlannerRoutingTest(unittest.TestCase):
             [{"id": "step_1", "tool": "list_out_of_stock", "arguments": {}}],
             plan["steps"],
         )
+
+    def test_simple_replenishment_order_request_routes_to_safe_draft(self):
+        service = LLMService()
+        messages = [
+            {"role": "system", "content": FULL_SYSTEM},
+            {"role": "user", "content": "Eksik stoklar için satın alma siparişi oluştur."},
+        ]
+
+        prepared, route = prepare_inference_messages(messages)
+        self.assertEqual(SAFE_DRAFT_ROUTE, route)
+        self.assertEqual(2, len(prepared))
+
+        with patch("llm.requests.post") as post:
+            raw = service.generate(messages)
+
+        post.assert_not_called()
+        plan = json.loads(raw)
+        self.assertEqual("DRAFT", plan["goal"])
+        tools = [step["tool"] for step in plan["steps"]]
+        self.assertEqual(
+            ["calculate_replenishment", "create_procurement_plan", "create_purchase_draft"],
+            tools,
+        )
+        self.assertNotIn("place_order", tools)
+        self.assertEqual(
+            {"$from": "step_1.replenishments", "$transform": "replenishments_to_items"},
+            plan["steps"][1]["arguments"]["items"],
+        )
+
+    def test_advanced_replenishment_request_keeps_full_planner(self):
+        original = [
+            {"role": "system", "content": FULL_SYSTEM},
+            {"role": "user", "content": "Eksik stoklar için 50.000 TL bütçeyle sipariş oluştur."},
+        ]
+
+        prepared, route = prepare_inference_messages(original)
+
+        self.assertIsNone(route)
+        self.assertIs(prepared, original)
+
+    def test_confirmation_never_uses_safe_draft_route(self):
+        original = [
+            {"role": "system", "content": FULL_SYSTEM},
+            {"role": "user", "content": "42 numaralı taslağı onayla ve siparişi oluştur."},
+        ]
+
+        prepared, route = prepare_inference_messages(original)
+
+        self.assertIsNone(route)
+        self.assertIs(prepared, original)
 
     def test_procurement_request_keeps_full_planner(self):
         original = [
