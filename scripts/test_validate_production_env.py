@@ -3,13 +3,16 @@ import unittest
 from validate_production_env import validate
 
 
+POSTGRES_TEST_DIGEST = "0123456789abcdef" * 4
+OLLAMA_TEST_DIGEST = "fedcba9876543210" * 4
+
 GOOD_ENV = {
     "DB_USERNAME": "smartstock_app",
     "DB_PASSWORD": "a-very-long-random-production-secret-42",
     "DB_NAME": "smart_stock",
     "PUBLIC_ORIGIN": "https://stock.example.com",
-    "POSTGRES_IMAGE": "postgres:17@sha256:" + "1" * 64,
-    "OLLAMA_IMAGE": "ollama/ollama:0.11.4@sha256:" + "2" * 64,
+    "POSTGRES_IMAGE": "postgres:17@sha256:" + POSTGRES_TEST_DIGEST,
+    "OLLAMA_IMAGE": "ollama/ollama:0.11.4@sha256:" + OLLAMA_TEST_DIGEST,
     "OLLAMA_MODEL": "qwen3:8b",
     "WEB_BIND_ADDRESS": "127.0.0.1",
     "WEB_PORT": "8080",
