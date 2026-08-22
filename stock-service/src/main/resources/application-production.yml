@@ -11,15 +11,21 @@ spring:
     username: ${DB_USERNAME}
     password: ${DB_PASSWORD}
 
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: false
+    validate-on-migrate: true
+
   jpa:
     hibernate:
-      # Production must never mutate schema implicitly. Apply an explicit
-      # migration/restore before starting this profile.
+      # Flyway owns production schema changes. Hibernate only verifies that the
+      # migrated schema still matches the entities.
       ddl-auto: validate
     show-sql: false
     defer-datasource-initialization: false
 
   sql:
     init:
-      # Development seed data must never run in production.
+      # Development/demo seed data must never run in production.
       mode: never
