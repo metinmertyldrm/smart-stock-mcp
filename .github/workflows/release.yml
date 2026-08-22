@@ -166,38 +166,54 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
-      - name: Build and push stock-service image
+      - name: Build and push stock-service commit image
         id: stock
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: ./stock-service
           file: ./stock-service/Dockerfile.prod
           push: true
-          tags: |
-            ${{ steps.images.outputs.stock }}:${{ github.ref_name }}
-            ${{ steps.images.outputs.stock }}:sha-${{ github.sha }}
+          tags: ${{ steps.images.outputs.stock }}:sha-${{ github.sha }}
 
-      - name: Build and push llm-host image
+      - name: Build and push llm-host commit image
         id: llm
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: ./llm-host/Dockerfile.prod
           push: true
-          tags: |
-            ${{ steps.images.outputs.llm }}:${{ github.ref_name }}
-            ${{ steps.images.outputs.llm }}:sha-${{ github.sha }}
+          tags: ${{ steps.images.outputs.llm }}:sha-${{ github.sha }}
 
-      - name: Build and push web-ui image
+      - name: Build and push web-ui commit image
         id: web
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: ./web-ui
           file: ./web-ui/Dockerfile.prod
           push: true
-          tags: |
-            ${{ steps.images.outputs.web }}:${{ github.ref_name }}
-            ${{ steps.images.outputs.web }}:sha-${{ github.sha }}
+          tags: ${{ steps.images.outputs.web }}:sha-${{ github.sha }}
+
+      - name: Promote verified digests to version tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            --tag "${{ steps.images.outputs.stock }}:$GITHUB_REF_NAME" \
+            "${{ steps.images.outputs.stock }}@${{ steps.stock.outputs.digest }}"
+          docker buildx imagetools create \
+            --tag "${{ steps.images.outputs.llm }}:$GITHUB_REF_NAME" \
+            "${{ steps.images.outputs.llm }}@${{ steps.llm.outputs.digest }}"
+          docker buildx imagetools create \
+            --tag "${{ steps.images.outputs.web }}:$GITHUB_REF_NAME" \
+            "${{ steps.images.outputs.web }}@${{ steps.web.outputs.digest }}"
+
+      - name: Verify promoted version tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "${{ steps.images.outputs.stock }}:$GITHUB_REF_NAME" >/dev/null
+          docker buildx imagetools inspect "${{ steps.images.outputs.llm }}:$GITHUB_REF_NAME" >/dev/null
+          docker buildx imagetools inspect "${{ steps.images.outputs.web }}:$GITHUB_REF_NAME" >/dev/null
 
       - name: Write immutable release manifest
         shell: bash
