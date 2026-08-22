@@ -3,6 +3,7 @@ import {useMutation,useQuery,useQueryClient} from '@tanstack/react-query';
 import {Bot,History,Lightbulb,Menu,PanelRight,Plus,Send,Trash2,User,X} from 'lucide-react';
 import {endpoints,keys} from '../api/queries';
 import {errorMessage} from '../utils/format';
+import {displayConversationTitle} from '../utils/conversationTitle';
 import {Spinner} from '../components/States';
 import type {ChatMessage,ConversationSummary} from '../types';
 import {TracePanel} from '../components/DecisionJournal';
@@ -11,7 +12,6 @@ export {TracePanel} from '../components/DecisionJournal';
 const prompts=['Stokta olmayan ürünleri bul ve en ekonomik satın alma planını hazırla.','Toplam bütçe 50.000 TL\'yi geçmeyecek şekilde eksik ürünleri tamamla.','Stokta azalan ürünler için en ucuz tekliflerden taslak sipariş oluştur.','Bekleyen siparişleri kontrol et ve teslim edilen ürünleri stoğa ekle.','En ucuz ve en hızlı planı karşılaştır.'];
 const conversationKey=['ai-conversations'];
 function groupLabel(date:string){const day=new Date(date);const today=new Date();const diff=Math.floor((new Date(today.getFullYear(),today.getMonth(),today.getDate()).getTime()-new Date(day.getFullYear(),day.getMonth(),day.getDate()).getTime())/86400000);return diff===0?'Bugün':diff===1?'Dün':diff<7?'Son 7 gün':'Daha eski'}
-export function displayConversationTitle(title:string){return title==='Eksik Stokları Tamamlama'?'Stokta Olmayan Ürünler':title}
 
 export function AiPage(){
   const queryClient=useQueryClient();
