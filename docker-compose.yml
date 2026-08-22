@@ -83,7 +83,7 @@ services:
     volumes:
       - llm-data:/data
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=3)\" >/dev/null 2>&1 || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/ready', timeout=3)\" >/dev/null 2>&1 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 20
