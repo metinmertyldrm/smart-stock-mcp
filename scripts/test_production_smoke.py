@@ -23,6 +23,9 @@ def hardened_config():
             "web-ui": {
                 **base_hardening,
                 "ports": [{"host_ip": "127.0.0.1", "published": "8080", "target": 8080}],
+                "healthcheck": {
+                    "test": ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null || exit 1"]
+                },
             },
         }
     }
@@ -60,6 +63,15 @@ class ProductionComposeAuditTest(unittest.TestCase):
     def test_wrong_spring_profile_is_rejected(self):
         config = hardened_config()
         config["services"]["stock-service"]["environment"]["SPRING_PROFILES_ACTIVE"] = "default"
+        with self.assertRaises(ProductionSmokeFailure):
+            audit_compose_config(config)
+
+    def test_gateway_healthcheck_must_use_ipv4_loopback(self):
+        config = hardened_config()
+        config["services"]["web-ui"]["healthcheck"]["test"] = [
+            "CMD-SHELL",
+            "wget -qO- http://localhost:8080/healthz >/dev/null || exit 1",
+        ]
         with self.assertRaises(ProductionSmokeFailure):
             audit_compose_config(config)
 
