@@ -139,7 +139,7 @@ jobs:
       LLM_SESSION_TTL_SECONDS: '86400'
     services:
       postgres:
-        image: postgres:17
+        image: postgres:17@sha256:e38411452a464af89e5adadb8d223bf53b898d47d6ef918b2d58c08707350449
         env:
           POSTGRES_DB: smart_stock_prod_ci
           POSTGRES_USER: smartstock_ci
