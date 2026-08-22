@@ -156,11 +156,11 @@ Do not publish stock-service, llm-host, PostgreSQL or Ollama just to make the ou
 
 ## 8. Backup
 
-Create an application-consistent PostgreSQL logical backup. The command runs through the internal container so the database does not need a host port:
+Create an application-consistent PostgreSQL logical backup. The command runs through the internal container so the database does not need a host port. It expands the database/user variables **inside** the container rather than assuming the host shell loaded `.env.production`:
 
 ```bash
 docker compose --env-file .env.production -f docker-compose.prod.yml exec -T postgres \
-  pg_dump -U "$DB_USERNAME" -d "$DB_NAME" -Fc > smart-stock-$(date +%Y%m%d-%H%M%S).dump
+  sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > smart-stock-backup.dump
 ```
 
 Also back up the persistent deployment configuration and, if conversation continuity is required, the `llm-prod-data` volume through your infrastructure's volume-backup mechanism. Never place `.env.production` or backup files containing secrets in Git.
@@ -175,7 +175,7 @@ Conceptually:
 
 ```bash
 cat backup.dump | docker compose --env-file .env.production -f docker-compose.prod.yml exec -T postgres \
-  pg_restore -U "$DB_USERNAME" -d "$DB_NAME" --clean --if-exists
+  sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists'
 ```
 
 Use this destructive `--clean` form only on the explicitly selected restore target. Stop application writers during a real disaster-recovery restore.
