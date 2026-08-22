@@ -156,7 +156,7 @@ services:
     mem_limit: ${WEB_MEMORY_LIMIT:-256m}
     stop_grace_period: 15s
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/healthz >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 10
