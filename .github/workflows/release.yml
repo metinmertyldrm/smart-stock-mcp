@@ -1,0 +1,231 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Verify and publish release
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      DB_NAME: smart_stock_release_ci
+      DB_USERNAME: smartstock_release
+      DB_PASSWORD: release-ci-database-secret-42x
+      PUBLIC_ORIGIN: https://stock.example.test
+      WEB_BIND_ADDRESS: 127.0.0.1
+      WEB_PORT: '18080'
+      POSTGRES_IMAGE: postgres:17@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      OLLAMA_IMAGE: ollama/ollama:0.0.0@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
+      OLLAMA_MODEL: qwen3:8b
+      LLM_SESSION_TTL_SECONDS: '86400'
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: smart_stock_release_ci
+          POSTGRES_USER: smartstock_release
+          POSTGRES_PASSWORD: release-ci-database-secret-42x
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U smartstock_release -d smart_stock_release_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - name: Checkout tagged commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate SemVer tag and main ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Release tag must match vX.Y.Z without prerelease/build suffixes: $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          git fetch origin main --no-tags
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+            echo "Tagged commit must be contained in origin/main" >&2
+            exit 1
+          }
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+          cache: pip
+          cache-dependency-path: |
+            llm-host/requirements.txt
+            stock-mcp/requirements.txt
+            marketplace-mcp/requirements.txt
+
+      - name: Install Python dependencies
+        run: >-
+          python -m pip install
+          -r llm-host/requirements.txt
+          -r stock-mcp/requirements.txt
+          -r marketplace-mcp/requirements.txt
+
+      - name: Run Python tests and golden AI evaluation
+        run: |
+          python -m pip check
+          python -m unittest discover -s llm-host -p 'test_*.py'
+          python -m unittest discover -s scripts -p 'test_*.py'
+          python llm-host/golden_eval.py
+
+      - name: Validate production contract
+        run: |
+          python scripts/validate_production_env.py
+          python scripts/production_smoke.py --config-only
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Verify Java project and production migration
+        working-directory: stock-service
+        env:
+          SPRING_PROFILES_ACTIVE: production
+          DB_URL: jdbc:postgresql://localhost:5432/smart_stock_release_ci
+          SERVER_PORT: '18081'
+          CORS_ALLOWED_ORIGINS: https://stock.example.test
+        run: |
+          set -euo pipefail
+          mvn -B verify
+          java -jar target/stock-service-*.jar > /tmp/stock-release.log 2>&1 &
+          app_pid=$!
+          trap 'kill "$app_pid" 2>/dev/null || true' EXIT
+
+          ready=0
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:18081/api/products > /tmp/release-products.json; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" -ne 1 ]; then
+            cat /tmp/stock-release.log
+            exit 1
+          fi
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          payload = json.loads(Path('/tmp/release-products.json').read_text())
+          assert payload == [], 'production release migration must not seed demo rows'
+          PY
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web-ui/package-lock.json
+
+      - name: Verify frontend
+        working-directory: web-ui
+        run: |
+          npm ci
+          npm run lint
+          npm run test
+          npm run build
+
+      - name: Set image names
+        id: images
+        shell: bash
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "stock=ghcr.io/$owner/smart-stock-stock-service" >> "$GITHUB_OUTPUT"
+          echo "llm=ghcr.io/$owner/smart-stock-llm-host" >> "$GITHUB_OUTPUT"
+          echo "web=ghcr.io/$owner/smart-stock-web-ui" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push stock-service image
+        id: stock
+        uses: docker/build-push-action@v6
+        with:
+          context: ./stock-service
+          file: ./stock-service/Dockerfile.prod
+          push: true
+          tags: |
+            ${{ steps.images.outputs.stock }}:${{ github.ref_name }}
+            ${{ steps.images.outputs.stock }}:sha-${{ github.sha }}
+
+      - name: Build and push llm-host image
+        id: llm
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./llm-host/Dockerfile.prod
+          push: true
+          tags: |
+            ${{ steps.images.outputs.llm }}:${{ github.ref_name }}
+            ${{ steps.images.outputs.llm }}:sha-${{ github.sha }}
+
+      - name: Build and push web-ui image
+        id: web
+        uses: docker/build-push-action@v6
+        with:
+          context: ./web-ui
+          file: ./web-ui/Dockerfile.prod
+          push: true
+          tags: |
+            ${{ steps.images.outputs.web }}:${{ github.ref_name }}
+            ${{ steps.images.outputs.web }}:sha-${{ github.sha }}
+
+      - name: Write immutable release manifest
+        shell: bash
+        run: |
+          cat > release-manifest.txt <<EOF
+          Smart Stock release: $GITHUB_REF_NAME
+          Git commit: $GITHUB_SHA
+
+          stock-service:
+            image: ${{ steps.images.outputs.stock }}:$GITHUB_REF_NAME
+            digest: ${{ steps.stock.outputs.digest }}
+
+          llm-host:
+            image: ${{ steps.images.outputs.llm }}:$GITHUB_REF_NAME
+            digest: ${{ steps.llm.outputs.digest }}
+
+          web-ui:
+            image: ${{ steps.images.outputs.web }}:$GITHUB_REF_NAME
+            digest: ${{ steps.web.outputs.digest }}
+          EOF
+          cat release-manifest.txt
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          gh release create "$GITHUB_REF_NAME"
+          release-manifest.txt
+          --verify-tag
+          --generate-notes
+          --title "Smart Stock $GITHUB_REF_NAME"
