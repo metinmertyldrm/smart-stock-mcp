@@ -180,11 +180,16 @@ def run(
     env_file: Path | None,
     allow_public_bind: bool,
     skip_compose_audit: bool,
+    config_only: bool,
 ) -> None:
+    if config_only and skip_compose_audit:
+        raise ProductionSmokeFailure("--config-only cannot be combined with --skip-compose-audit")
     if not skip_compose_audit:
         config = render_compose(repo_root, env_file)
         audit_compose_config(config, allow_public_bind=allow_public_bind)
         print("  [OK] Production Compose exposes only the hardened gateway")
+    if config_only:
+        return
     run_http_checks(web_url, timeout)
 
 
@@ -197,6 +202,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--env-file", type=Path)
     parser.add_argument("--allow-public-bind", action="store_true")
     parser.add_argument("--skip-compose-audit", action="store_true")
+    parser.add_argument("--config-only", action="store_true", help="Audit rendered Compose and skip HTTP checks")
     args = parser.parse_args(argv)
     if args.timeout <= 0:
         parser.error("--timeout must be greater than zero")
@@ -210,6 +216,7 @@ def main(argv: list[str] | None = None) -> int:
             env_file=args.env_file.resolve() if args.env_file else None,
             allow_public_bind=args.allow_public_bind,
             skip_compose_audit=args.skip_compose_audit,
+            config_only=args.config_only,
         )
     except ProductionSmokeFailure as exc:
         print(f"\n[FAIL] {exc}", file=sys.stderr)
