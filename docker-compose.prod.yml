@@ -93,6 +93,9 @@ services:
       STOCK_SERVICE_URL: http://stock-service:8081
       OLLAMA_URL: http://ollama:11434/api/generate
       OLLAMA_MODEL: ${OLLAMA_MODEL:?OLLAMA_MODEL is required}
+      LLM_MODEL: ${OLLAMA_MODEL:?OLLAMA_MODEL is required}
+      APP_ENV: production
+      APP_VERSION: ${APP_VERSION:-local-production}
       OLLAMA_CONNECT_TIMEOUT: ${OLLAMA_CONNECT_TIMEOUT:-20}
       OLLAMA_READ_TIMEOUT: ${OLLAMA_READ_TIMEOUT:-300}
       LLM_CORS_ALLOWED_ORIGINS: ${PUBLIC_ORIGIN:?PUBLIC_ORIGIN is required}
