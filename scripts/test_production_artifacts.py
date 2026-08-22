@@ -44,11 +44,16 @@ class ProductionArtifactContractTest(unittest.TestCase):
                 f"Privileged release action must be pinned to a full commit SHA: {line.strip()}",
             )
 
-    def test_release_workflow_never_publishes_latest_application_tag(self):
+    def test_release_workflow_uses_atomic_version_promotion_without_latest(self):
         workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
         self.assertNotRegex(workflow, r"smart-stock-(?:stock-service|llm-host|web-ui):latest\b")
         self.assertIn("sha-${{ github.sha }}", workflow)
-        self.assertIn("${{ github.ref_name }}", workflow)
+        self.assertIn("Promote verified digests to version tags", workflow)
+        self.assertIn("$GITHUB_REF_NAME", workflow)
+        self.assertIn("docker buildx imagetools create", workflow)
+        self.assertIn("steps.stock.outputs.digest", workflow)
+        self.assertIn("steps.llm.outputs.digest", workflow)
+        self.assertIn("steps.web.outputs.digest", workflow)
 
 
 if __name__ == "__main__":
