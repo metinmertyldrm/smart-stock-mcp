@@ -12,16 +12,18 @@ import plan_execution  # noqa: E402
 
 
 class PlanExecutionExtractionTest(unittest.TestCase):
-    def test_app_reexports_execution_api(self):
-        self.assertIs(app.execute_plan, plan_execution.execute_plan)
+    def test_app_reexports_execution_api_with_rbac_facade(self):
+        # TASK 10 intentionally wraps only execute_plan so request-scoped RBAC
+        # can preflight a complete plan before the raw executor runs.
+        self.assertIsNot(app.execute_plan, plan_execution.execute_plan)
         self.assertIs(app.resolve_step_arguments, plan_execution.resolve_step_arguments)
         self.assertIs(app.resolve_argument_value, plan_execution.resolve_argument_value)
         self.assertIs(app.normalize_tool_result, plan_execution.normalize_tool_result)
         self.assertIs(app.save_reference, plan_execution.save_reference)
         self.assertIs(app.order_to_incoming_items, plan_execution.order_to_incoming_items)
 
-    def test_legacy_runtime_globals_are_rebound(self):
-        self.assertIs(agent_runtime.execute_plan, plan_execution.execute_plan)
+    def test_legacy_runtime_globals_use_same_rbac_execution_facade(self):
+        self.assertIs(agent_runtime.execute_plan, app.execute_plan)
         self.assertIs(agent_runtime.resolve_step_arguments, plan_execution.resolve_step_arguments)
         self.assertIs(agent_runtime.resolve_argument_value, plan_execution.resolve_argument_value)
         self.assertIs(agent_runtime.normalize_tool_result, plan_execution.normalize_tool_result)
