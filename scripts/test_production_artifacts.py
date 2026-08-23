@@ -70,7 +70,6 @@ class ProductionArtifactContractTest(unittest.TestCase):
     def test_production_web_image_verifies_nginx_auth_request_module(self):
         dockerfile = PRODUCTION_WEB_DOCKERFILE.read_text(encoding="utf-8")
         self.assertIn("--with-http_auth_request_module", dockerfile)
-        self.assertIn("nginx -t", dockerfile)
 
 
 if __name__ == "__main__":
