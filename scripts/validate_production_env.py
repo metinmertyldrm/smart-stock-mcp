@@ -13,6 +13,9 @@ from urllib.parse import urlsplit
 REQUIRED = (
     "DB_USERNAME",
     "DB_PASSWORD",
+    "LLM_AUTH_MODE",
+    "LLM_BOOTSTRAP_ADMIN_USERNAME",
+    "LLM_BOOTSTRAP_ADMIN_PASSWORD",
     "PUBLIC_ORIGIN",
     "POSTGRES_IMAGE",
     "OLLAMA_IMAGE",
@@ -30,6 +33,7 @@ COMMON_SECRETS = {
 }
 DIGEST_RE = re.compile(r"@sha256:([0-9a-fA-F]{64})$")
 DB_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+IDENTITY_USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{2,63}$")
 TRUE_VALUES = {"1", "true", "yes", "on"}
 
 
@@ -90,6 +94,14 @@ def validate_origin(value: str, errors: list[str]) -> None:
         errors.append("PUBLIC_ORIGIN yalnız origin olmalı; path içeremez")
 
 
+def secret_is_placeholder(value: str) -> bool:
+    lowered = value.casefold().strip()
+    return lowered in COMMON_SECRETS or any(
+        token in lowered
+        for token in ("changeme", "replace-me", "replace_with", "example-password")
+    )
+
+
 def validate(values: dict[str, str]) -> list[str]:
     errors: list[str] = []
 
@@ -98,14 +110,32 @@ def validate(values: dict[str, str]) -> list[str]:
             errors.append(f"{name} zorunlu")
 
     password = values.get("DB_PASSWORD", "")
-    lowered = password.casefold().strip()
     if password:
         if len(password) < 20:
             errors.append("DB_PASSWORD en az 20 karakter olmalı")
-        if lowered in COMMON_SECRETS or any(token in lowered for token in ("changeme", "replace-me", "replace_with", "example-password")):
+        if secret_is_placeholder(password):
             errors.append("DB_PASSWORD default/örnek bir değer olamaz")
         if values.get("DB_USERNAME", "").strip() and password == values.get("DB_USERNAME", "").strip():
             errors.append("DB_PASSWORD, DB_USERNAME ile aynı olamaz")
+
+    auth_mode = values.get("LLM_AUTH_MODE", "").strip().casefold()
+    if auth_mode and auth_mode != "local":
+        errors.append("LLM_AUTH_MODE production için local olmalı")
+
+    admin_username = values.get("LLM_BOOTSTRAP_ADMIN_USERNAME", "").strip().casefold()
+    if admin_username and not IDENTITY_USERNAME_RE.fullmatch(admin_username):
+        errors.append("LLM_BOOTSTRAP_ADMIN_USERNAME geçerli bir yerel kullanıcı adı olmalı")
+
+    admin_password = values.get("LLM_BOOTSTRAP_ADMIN_PASSWORD", "")
+    if admin_password:
+        if len(admin_password) < 20:
+            errors.append("LLM_BOOTSTRAP_ADMIN_PASSWORD en az 20 karakter olmalı")
+        if secret_is_placeholder(admin_password):
+            errors.append("LLM_BOOTSTRAP_ADMIN_PASSWORD default/örnek bir değer olamaz")
+        if admin_username and admin_password.casefold() == admin_username:
+            errors.append("LLM_BOOTSTRAP_ADMIN_PASSWORD kullanıcı adıyla aynı olamaz")
+        if password and admin_password == password:
+            errors.append("LLM_BOOTSTRAP_ADMIN_PASSWORD, DB_PASSWORD ile aynı olmamalı")
 
     origin = values.get("PUBLIC_ORIGIN", "").strip()
     if origin:
@@ -169,6 +199,7 @@ def main(argv: list[str] | None = None) -> int:
     print("Smart Stock production environment validation")
     print("  [OK] Required values are present")
     print("  [OK] Database credential policy passed")
+    print("  [OK] Local identity/bootstrap policy passed")
     print("  [OK] Public origin is HTTPS-only")
     print("  [OK] External container images are digest-pinned")
     print("  [OK] HTTP bind/session settings passed")
