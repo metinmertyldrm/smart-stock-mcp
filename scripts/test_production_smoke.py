@@ -27,6 +27,10 @@ def hardened_config():
                     "APP_VERSION": "local-production",
                     "OLLAMA_MODEL": "qwen3:8b",
                     "LLM_MODEL": "qwen3:8b",
+                    "LLM_AUTH_MODE": "local",
+                    "LLM_IDENTITY_DB": "/data/identity.db",
+                    "LLM_BOOTSTRAP_ADMIN_USERNAME": "smartstock-admin",
+                    "LLM_BOOTSTRAP_ADMIN_PASSWORD": "a-long-private-admin-password",
                 },
             },
             "web-ui": {
@@ -95,6 +99,19 @@ class ProductionComposeAuditTest(unittest.TestCase):
         config["services"]["llm-host"]["environment"]["LLM_MODEL"] = "other-model"
         with self.assertRaises(ProductionSmokeFailure):
             audit_compose_config(config)
+
+    def test_llm_host_must_use_local_identity_mode(self):
+        config = hardened_config()
+        config["services"]["llm-host"]["environment"]["LLM_AUTH_MODE"] = "anonymous"
+        with self.assertRaises(ProductionSmokeFailure):
+            audit_compose_config(config)
+
+    def test_llm_host_requires_identity_database_and_bootstrap_credentials(self):
+        for name in ("LLM_IDENTITY_DB", "LLM_BOOTSTRAP_ADMIN_USERNAME", "LLM_BOOTSTRAP_ADMIN_PASSWORD"):
+            config = hardened_config()
+            config["services"]["llm-host"]["environment"][name] = ""
+            with self.subTest(name=name), self.assertRaises(ProductionSmokeFailure):
+                audit_compose_config(config)
 
 
 if __name__ == "__main__":
