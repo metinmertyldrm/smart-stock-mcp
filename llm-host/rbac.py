@@ -1,8 +1,9 @@
 """Request-scoped RBAC enforcement for MCP tool execution.
 
 The authenticated role is server-owned and stored in a ContextVar for the
-lifetime of one HTTP request. MCPClient performs the final tool authorization
-immediately before dispatch, so an LLM plan cannot grant itself extra rights.
+lifetime of one HTTP request. MCPClient filters the visible tool catalog and
+performs final authorization immediately before dispatch, so an LLM plan cannot
+grant itself extra rights.
 
 A ``None`` role intentionally preserves unrestricted trusted/internal test and
 legacy anonymous execution. Production local-identity requests always set an
@@ -60,11 +61,15 @@ def allowed_write_tools(role: str | None) -> frozenset[str]:
     return frozenset()
 
 
+def tool_visible(tool_name: str, *, role: str | None = None) -> bool:
+    """Return whether a tool may be advertised to the current request."""
+    effective_role = current_role() if role is None else normalize_role(role)
+    return tool_name not in WRITE_TOOLS or tool_name in allowed_write_tools(effective_role)
+
+
 def authorize_tool(tool_name: str, *, role: str | None = None) -> None:
     effective_role = current_role() if role is None else normalize_role(role)
-    if tool_name not in WRITE_TOOLS:
-        return
-    if tool_name in allowed_write_tools(effective_role):
+    if tool_visible(tool_name, role=effective_role):
         return
     label = effective_role or "TRUSTED_INTERNAL"
     raise AuthorizationError(
