@@ -130,6 +130,9 @@ jobs:
       DB_NAME: smart_stock_prod_ci
       DB_USERNAME: smartstock_ci
       DB_PASSWORD: ci-production-database-secret-42x
+      LLM_AUTH_MODE: local
+      LLM_BOOTSTRAP_ADMIN_USERNAME: ci-admin
+      LLM_BOOTSTRAP_ADMIN_PASSWORD: ci-separate-admin-secret-84x
       PUBLIC_ORIGIN: https://stock.example.test
       WEB_BIND_ADDRESS: 127.0.0.1
       WEB_PORT: '18080'
