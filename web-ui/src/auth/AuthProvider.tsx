@@ -16,7 +16,7 @@ export function AuthProvider({children}:{children:React.ReactNode}){
  const forgetUser=()=>{queryClient.clear();setUser(null)};
  const initialize=async()=>{setLoading(true);setStartupError('');try{const nextMode=await api.auth.mode();setMode(nextMode);if(nextMode==='local'){if(api.auth.hasSession()){try{acceptUser(await api.auth.me())}catch{api.auth.clearSession();forgetUser()}}else forgetUser()}}catch(exc){setStartupError(exc instanceof ApiError?exc.message:'Kimlik servisine ulaşılamadı.')}finally{setLoading(false)}};
  useEffect(()=>{void initialize()},[]);
- useEffect(()=>{const changed=()=>{if(mode==='local'&&!api.auth.hasSession())forgetUser()};window.addEventListener(authChangedEvent,changed);return()=>window.removeEventListener(authChangedEvent,changed)},[mode,queryClient]);
+ useEffect(()=>{const changed=()=>{if(mode==='local'&&!api.auth.hasSession())forgetUser()};window.addEventListener(authChangedEvent,changed);window.addEventListener('storage',changed);return()=>{window.removeEventListener(authChangedEvent,changed);window.removeEventListener('storage',changed)}},[mode,queryClient]);
  const value=useMemo<AuthContextValue|null>(()=>mode?{mode,user,login:async(username,password)=>{acceptUser(await api.auth.login(username,password))},logout:async()=>{try{await api.auth.logout()}finally{forgetUser()}}}:null,[mode,user,queryClient]);
  if(loading)return <AuthLoading/>;
  if(startupError||!mode)return <AuthStartupError message={startupError||'Kimlik yapılandırması alınamadı.'} retry={initialize}/>;
