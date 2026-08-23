@@ -7,7 +7,7 @@ export type AuthRole='VIEWER'|'OPERATOR'|'MANAGER'|'ADMIN';
 export type AuthUser={id:string;username:string;displayName:string;role:AuthRole;enabled:boolean;capabilities:string[]};
 type LoginResponse={token:string;expiresAt?:string;user:AuthUser};
 const sessionKey='smart-stock-session-token';export const authChangedEvent='smart-stock-auth-changed';let sessionPromise:Promise<string>|null=null;let authModePromise:Promise<AuthMode>|null=null;
-const stockUsesSameOriginGateway=backend.startsWith('/');
+const stockUsesSameOriginGateway=backend==='/stock'||backend.startsWith('/stock/');
 function notifyAuthChange(){window.dispatchEvent(new Event(authChangedEvent))}
 function storeSession(token:string){localStorage.setItem(sessionKey,token);notifyAuthChange()}
 function clearSession(){const had=localStorage.getItem(sessionKey);localStorage.removeItem(sessionKey);if(had)notifyAuthChange()}
