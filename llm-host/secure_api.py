@@ -1,9 +1,13 @@
 """Security and observability wrapper for the Smart Stock LLM HTTP API.
 
-`web_api` keeps the orchestration implementation and its internal X-Client-Id
-owner contract. This module is the deployable ASGI entry point: it issues opaque
-sessions, authenticates bearer tokens, injects server-owned identity, and adds
-request correlation plus process-local operational metrics.
+`web_api` keeps the orchestration implementation and its internal server-owned
+identity contract. This deployable ASGI entry point supports two modes:
+
+- ``anonymous`` for deterministic development/backward compatibility,
+- ``local`` for TASK 10 stable user identity and role-based authorization.
+
+In both modes caller-supplied owner/role headers are discarded before the
+request reaches ``web_api``.
 """
 from __future__ import annotations
 
@@ -13,10 +17,12 @@ import os
 import time
 import uuid
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
+from pydantic import BaseModel, Field
 
+from identity import IdentityError, IdentityStore, ROLE_VIEWER
 from observability import (
     correlate_response_payload,
     emit_event,
@@ -27,24 +33,72 @@ from observability import (
     reset_request_id,
     set_request_id,
 )
-from security import SessionError, SessionStore
+from security import DEFAULT_SESSION_DB, SessionError, SessionStore
 from web_api import app
 
 
-PUBLIC_PATHS = {"/api/health", "/api/ready", "/api/session"}
+AUTH_MODE = os.getenv("LLM_AUTH_MODE", "anonymous").strip().casefold()
+if AUTH_MODE not in {"anonymous", "local"}:
+    raise RuntimeError("LLM_AUTH_MODE must be anonymous or local")
+
+SESSION_PATH = os.getenv("LLM_SESSIONS_DB", DEFAULT_SESSION_DB)
+IDENTITY_PATH = os.getenv("LLM_IDENTITY_DB", SESSION_PATH)
+PUBLIC_PATHS = {"/api/health", "/api/ready", "/api/session", "/api/auth/login"}
 CHAT_ROUTES = {"/api/chat", "/api/conversations/{conversation_id}/confirm"}
-sessions = SessionStore()
+sessions = SessionStore(SESSION_PATH)
+identities = IdentityStore(IDENTITY_PATH)
+if AUTH_MODE == "local":
+    identities.bootstrap_admin(
+        os.getenv("LLM_BOOTSTRAP_ADMIN_USERNAME"),
+        os.getenv("LLM_BOOTSTRAP_ADMIN_PASSWORD"),
+    )
 
 
-def authenticated_headers(raw_headers: list[tuple[bytes, bytes]], owner_id: str) -> list[tuple[bytes, bytes]]:
-    """Drop external credentials/owner hints and inject the authenticated owner."""
+class LoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=512)
+
+
+class CreateUserRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=64)
+    password: str = Field(min_length=12, max_length=512)
+    displayName: str | None = Field(default=None, max_length=100)
+    role: str = Field(default=ROLE_VIEWER, min_length=1, max_length=20)
+
+
+class UpdateUserRequest(BaseModel):
+    role: str | None = Field(default=None, min_length=1, max_length=20)
+    enabled: bool | None = None
+
+
+def authenticated_headers(
+    raw_headers: list[tuple[bytes, bytes]], owner_id: str, role: str | None = None
+) -> list[tuple[bytes, bytes]]:
+    """Drop external credentials/identity hints and inject server-owned identity."""
     filtered = [
         (name, value)
         for name, value in raw_headers
-        if name.lower() not in {b"authorization", b"x-client-id"}
+        if name.lower()
+        not in {b"authorization", b"x-client-id", b"x-client-role", b"x-client-capabilities"}
     ]
     filtered.append((b"x-client-id", owner_id.encode("utf-8")))
+    if role:
+        filtered.append((b"x-client-role", role.encode("utf-8")))
     return filtered
+
+
+def current_identity(request: Request):
+    identity = getattr(request.state, "identity", None)
+    if AUTH_MODE != "local" or identity is None:
+        raise HTTPException(401, "Kimliği doğrulanmış kullanıcı gerekli.")
+    return identity
+
+
+def require_capability(request: Request, capability: str):
+    identity = current_identity(request)
+    if not identity.has(capability):
+        raise HTTPException(403, "Bu işlem için yetkiniz yok.")
+    return identity
 
 
 async def correlate_chat_response(response, request_id: str):
@@ -96,11 +150,80 @@ async def correlate_chat_response(response, request_id: str):
 
 @app.post("/api/session", status_code=201)
 async def create_session():
+    if AUTH_MODE != "anonymous":
+        raise HTTPException(404, "Anonim oturum bu ortamda kullanılamaz.")
     return JSONResponse(
         status_code=201,
         content=sessions.create(),
         headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
     )
+
+
+@app.post("/api/auth/login")
+async def login(body: LoginRequest):
+    if AUTH_MODE != "local":
+        raise HTTPException(404, "Kullanıcı girişi bu ortamda etkin değil.")
+    try:
+        identity = identities.authenticate(body.username, body.password)
+    except IdentityError:
+        emit_event("security.login.rejected", level=logging.WARNING)
+        raise HTTPException(401, "Kullanıcı adı veya parola hatalı.") from None
+    session = sessions.create(user_id=identity.id)
+    emit_event("security.login.succeeded", role=identity.role)
+    return JSONResponse(
+        content={**session, "user": identity.public_dict()},
+        headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+    )
+
+
+@app.get("/api/auth/me")
+async def me(request: Request):
+    identity = current_identity(request)
+    return {"user": identity.public_dict()}
+
+
+@app.post("/api/auth/logout", status_code=204)
+async def logout(request: Request):
+    sessions.revoke(request.headers.get("authorization"))
+    return Response(status_code=204, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/admin/users")
+async def list_users(request: Request):
+    require_capability(request, "users")
+    return {"items": [user.public_dict() for user in identities.list_users()]}
+
+
+@app.post("/api/admin/users", status_code=201)
+async def create_user(body: CreateUserRequest, request: Request):
+    require_capability(request, "users")
+    try:
+        user = identities.create_user(
+            body.username,
+            body.password,
+            display_name=body.displayName,
+            role=body.role,
+        )
+    except IdentityError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return user.public_dict()
+
+
+@app.post("/api/admin/users/{user_id}")
+async def update_user(user_id: str, body: UpdateUserRequest, request: Request):
+    actor = require_capability(request, "users")
+    try:
+        user = identities.get_user(user_id)
+        if body.role is not None:
+            user = identities.set_role(user_id, body.role)
+        if body.enabled is not None:
+            user = identities.set_enabled(user_id, body.enabled)
+            if not body.enabled:
+                sessions.revoke_user(user_id)
+    except IdentityError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    emit_event("security.user.updated", actorRole=actor.role, targetRole=user.role)
+    return user.public_dict()
 
 
 @app.get("/api/ready")
@@ -110,8 +233,10 @@ async def readiness():
 
 
 @app.get("/api/metrics")
-async def metric_snapshot():
-    """Return bounded process-local metrics; protected by the Bearer boundary."""
+async def metric_snapshot(request: Request):
+    """Return bounded process-local metrics; admin-only in local identity mode."""
+    if AUTH_MODE == "local":
+        require_capability(request, "metrics")
     return metrics.snapshot()
 
 
@@ -120,7 +245,25 @@ async def require_session(request: Request, call_next):
     if request.method == "OPTIONS" or request.url.path in PUBLIC_PATHS:
         return await call_next(request)
     try:
-        owner_id = sessions.owner_for_authorization(request.headers.get("authorization"))
+        principal = sessions.principal_for_authorization(request.headers.get("authorization"))
+        identity = None
+        if AUTH_MODE == "local":
+            if principal.user_id is None:
+                raise SessionError("Anonymous session is not a user session")
+            try:
+                identity = identities.get_user(principal.user_id)
+            except IdentityError as exc:
+                raise SessionError("Unknown user") from exc
+            if not identity.enabled:
+                sessions.revoke_user(identity.id)
+                raise SessionError("User disabled")
+            owner_id = identity.id
+            role = identity.role
+            request.state.identity = identity
+        else:
+            owner_id = principal.owner_id
+            role = None
+            request.state.identity = None
     except SessionError:
         emit_event(
             "security.session.rejected",
@@ -133,7 +276,9 @@ async def require_session(request: Request, call_next):
             content={"detail": "Geçerli bir oturum gerekli."},
             headers={"WWW-Authenticate": "Bearer", "Cache-Control": "no-store"},
         )
-    request.scope["headers"] = authenticated_headers(list(request.scope.get("headers", [])), owner_id)
+    request.scope["headers"] = authenticated_headers(
+        list(request.scope.get("headers", [])), owner_id, role
+    )
     return await call_next(request)
 
 
