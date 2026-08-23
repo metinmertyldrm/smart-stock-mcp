@@ -1,6 +1,6 @@
 import {createContext,useContext,useEffect,useMemo,useState} from 'react';
-import {LockKeyhole,LogIn,ShieldCheck} from 'lucide-react';
-import {api,ApiError,type AuthMode,type AuthUser} from '../api/client';
+import {LockKeyhole,LogIn,RefreshCw,ShieldCheck} from 'lucide-react';
+import {api,ApiError,authChangedEvent,type AuthMode,type AuthUser} from '../api/client';
 import {Spinner} from '../components/States';
 
 type AuthContextValue={mode:AuthMode;user:AuthUser|null;login:(username:string,password:string)=>Promise<void>;logout:()=>Promise<void>};
@@ -9,15 +9,19 @@ const AuthContext=createContext<AuthContextValue|null>(null);
 export function useAuth(){const value=useContext(AuthContext);if(!value)throw new Error('useAuth must be used inside AuthProvider');return value}
 
 export function AuthProvider({children}:{children:React.ReactNode}){
- const [mode,setMode]=useState<AuthMode|null>(null);const [user,setUser]=useState<AuthUser|null>(null);const [loading,setLoading]=useState(true);
- useEffect(()=>{let alive=true;(async()=>{try{const nextMode=await api.auth.mode();if(!alive)return;setMode(nextMode);if(nextMode==='local'&&api.auth.hasSession()){try{const current=await api.auth.me();if(alive)setUser(current)}catch{api.auth.clearSession()}}}finally{if(alive)setLoading(false)}})();return()=>{alive=false}},[]);
- const value=useMemo<AuthContextValue|null>(()=>mode?{mode,user,login:async(username,password)=>{const current=await api.auth.login(username,password);setUser(current)},logout:async()=>{await api.auth.logout();setUser(null)}}:null,[mode,user]);
- if(loading||!mode)return <AuthLoading/>;
+ const [mode,setMode]=useState<AuthMode|null>(null);const [user,setUser]=useState<AuthUser|null>(null);const [loading,setLoading]=useState(true);const [startupError,setStartupError]=useState('');
+ const initialize=async()=>{setLoading(true);setStartupError('');try{const nextMode=await api.auth.mode();setMode(nextMode);if(nextMode==='local'){if(api.auth.hasSession()){try{setUser(await api.auth.me())}catch{api.auth.clearSession();setUser(null)}}else setUser(null)}}catch(exc){setStartupError(exc instanceof ApiError?exc.message:'Kimlik servisine ulaşılamadı.')}finally{setLoading(false)}};
+ useEffect(()=>{void initialize()},[]);
+ useEffect(()=>{const changed=()=>{if(mode==='local'&&!api.auth.hasSession())setUser(null)};window.addEventListener(authChangedEvent,changed);return()=>window.removeEventListener(authChangedEvent,changed)},[mode]);
+ const value=useMemo<AuthContextValue|null>(()=>mode?{mode,user,login:async(username,password)=>{const current=await api.auth.login(username,password);setUser(current)},logout:async()=>{try{await api.auth.logout()}finally{setUser(null)}}}:null,[mode,user]);
+ if(loading)return <AuthLoading/>;
+ if(startupError||!mode)return <AuthStartupError message={startupError||'Kimlik yapılandırması alınamadı.'} retry={initialize}/>;
  if(mode==='local'&&!user)return <LoginPage onLogin={async(username,password)=>{const current=await api.auth.login(username,password);setUser(current)}}/>;
  return <AuthContext.Provider value={value!}>{children}</AuthContext.Provider>;
 }
 
 function AuthLoading(){return <div className="grid min-h-screen place-items-center bg-slate-50"><div className="flex items-center gap-3 rounded-2xl border bg-white px-5 py-4 text-sm text-slate-600 shadow-sm"><Spinner/>Güvenli oturum hazırlanıyor…</div></div>}
+function AuthStartupError({message,retry}:{message:string;retry:()=>Promise<void>}){return <div className="grid min-h-screen place-items-center bg-slate-50 p-4"><div className="w-full max-w-md rounded-2xl border bg-white p-6 text-center shadow-sm"><h1 className="font-bold">Kimlik servisine ulaşılamadı</h1><p className="mt-2 text-sm text-slate-500">{message}</p><button className="btn-primary mx-auto mt-4" onClick={()=>void retry()}><RefreshCw size={17}/>Tekrar dene</button></div></div>}
 
 function LoginPage({onLogin}:{onLogin:(username:string,password:string)=>Promise<void>}){
  const [username,setUsername]=useState('');const [password,setPassword]=useState('');const [pending,setPending]=useState(false);const [error,setError]=useState('');
