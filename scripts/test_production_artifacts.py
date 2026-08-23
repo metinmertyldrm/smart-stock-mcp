@@ -10,6 +10,8 @@ PRODUCTION_DOCKERFILES = (
     ROOT / "web-ui" / "Dockerfile.prod",
 )
 RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
+PRODUCTION_NGINX = ROOT / "web-ui" / "nginx.prod.conf"
+PRODUCTION_WEB_DOCKERFILE = ROOT / "web-ui" / "Dockerfile.prod"
 FULL_SHA_ACTION = re.compile(r"^\s*uses:\s*[^\s@]+@([0-9a-f]{40})(?:\s+#.*)?$")
 
 
@@ -54,6 +56,21 @@ class ProductionArtifactContractTest(unittest.TestCase):
         self.assertIn("steps.stock.outputs.digest", workflow)
         self.assertIn("steps.llm.outputs.digest", workflow)
         self.assertIn("steps.web.outputs.digest", workflow)
+
+    def test_production_stock_gateway_requires_llm_identity_subrequest(self):
+        nginx = PRODUCTION_NGINX.read_text(encoding="utf-8")
+        self.assertIn("location = /_auth", nginx)
+        self.assertIn("proxy_pass http://llm-host:8000/api/auth/me;", nginx)
+        self.assertIn("proxy_set_header Authorization $http_authorization;", nginx)
+        self.assertIn("location /stock/", nginx)
+        self.assertIn("auth_request /_auth;", nginx)
+        self.assertIn('proxy_set_header Authorization "";', nginx)
+        self.assertIn("if ($request_method !~ ^(GET|HEAD)$)", nginx)
+
+    def test_production_web_image_verifies_nginx_auth_request_module(self):
+        dockerfile = PRODUCTION_WEB_DOCKERFILE.read_text(encoding="utf-8")
+        self.assertIn("--with-http_auth_request_module", dockerfile)
+        self.assertIn("nginx -t", dockerfile)
 
 
 if __name__ == "__main__":
