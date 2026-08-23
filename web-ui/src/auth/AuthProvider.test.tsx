@@ -35,6 +35,7 @@ describe('AuthProvider cache isolation',()=>{
   vi.clearAllMocks();
   mocks.mode.mockResolvedValue('local');
   mocks.hasSession.mockReturnValue(false);
+  mocks.me.mockResolvedValue(admin);
   mocks.login.mockResolvedValue(admin);
   mocks.logout.mockResolvedValue(undefined);
  });
@@ -58,5 +59,19 @@ describe('AuthProvider cache isolation',()=>{
   await screen.findByRole('heading',{name:'Güvenli giriş'});
   await waitFor(()=>expect(queryClient.getQueryData(['ai-conversation','current-user'])).toBeUndefined());
   expect(mocks.logout).toHaveBeenCalledTimes(1);
+ });
+
+ it('clears cached data when another browser tab removes the session',async()=>{
+  mocks.hasSession.mockReturnValue(true);
+  const queryClient=new QueryClient({defaultOptions:{queries:{retry:false}}});
+  renderProvider(queryClient);
+
+  await screen.findByText('admin1');
+  queryClient.setQueryData(['ai-conversation','cross-tab-user'],{secret:'cross-tab-data'});
+  mocks.hasSession.mockReturnValue(false);
+  window.dispatchEvent(new StorageEvent('storage',{key:'smart-stock-session-token',oldValue:'token',newValue:null}));
+
+  await screen.findByRole('heading',{name:'Güvenli giriş'});
+  expect(queryClient.getQueryData(['ai-conversation','cross-tab-user'])).toBeUndefined();
  });
 });
