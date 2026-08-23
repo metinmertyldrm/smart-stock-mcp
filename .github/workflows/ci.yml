@@ -230,9 +230,112 @@ jobs:
 
       - name: Build hardened production application images
         run: |
-          docker build -f stock-service/Dockerfile.prod stock-service
-          docker build -f llm-host/Dockerfile.prod .
-          docker build -f web-ui/Dockerfile.prod web-ui
+          docker build -t smart-stock-stock:ci -f stock-service/Dockerfile.prod stock-service
+          docker build -t smart-stock-llm:ci -f llm-host/Dockerfile.prod .
+          docker build -t smart-stock-web:ci -f web-ui/Dockerfile.prod web-ui
+
+      - name: Verify production gateway identity boundary
+        run: |
+          set -euo pipefail
+          network="smart-stock-task10-${GITHUB_RUN_ID}"
+          cleanup() {
+            docker rm -f task10-web task10-llm task10-stock >/dev/null 2>&1 || true
+            docker network rm "$network" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          cleanup
+          docker network create "$network" >/dev/null
+
+          cat >/tmp/task10_mock_stock.py <<'PY'
+          import json
+          from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+          class Handler(BaseHTTPRequestHandler):
+              def log_message(self, *_args):
+                  pass
+
+              def do_GET(self):
+                  if self.headers.get("Authorization"):
+                      body = json.dumps({"error": "bearer leaked to stock backend"}).encode()
+                      self.send_response(500)
+                      self.send_header("Content-Type", "application/json")
+                      self.send_header("Content-Length", str(len(body)))
+                      self.end_headers()
+                      self.wfile.write(body)
+                      return
+                  if self.path == "/api/products":
+                      body = b"[]"
+                      self.send_response(200)
+                      self.send_header("Content-Type", "application/json")
+                      self.send_header("Content-Length", str(len(body)))
+                      self.end_headers()
+                      self.wfile.write(body)
+                      return
+                  self.send_response(404)
+                  self.end_headers()
+
+          ThreadingHTTPServer(("0.0.0.0", 8081), Handler).serve_forever()
+          PY
+
+          docker run -d --name task10-stock --network "$network" --network-alias stock-service \
+            --entrypoint python -v /tmp/task10_mock_stock.py:/tmp/task10_mock_stock.py:ro \
+            smart-stock-llm:ci /tmp/task10_mock_stock.py >/dev/null
+
+          docker run -d --name task10-llm --network "$network" --network-alias llm-host \
+            -e LLM_AUTH_MODE=local \
+            -e LLM_BOOTSTRAP_ADMIN_USERNAME=ci-admin \
+            -e LLM_BOOTSTRAP_ADMIN_PASSWORD=ci-gateway-admin-secret-42x \
+            -e LLM_SESSIONS_DB=/data/sessions.db \
+            -e LLM_IDENTITY_DB=/data/identity.db \
+            -e LLM_CONVERSATIONS_DB=/data/conversations.db \
+            -e STOCK_SERVICE_URL=http://stock-service:8081 \
+            -e OLLAMA_URL=http://unused-ollama:11434/api/generate \
+            -e LLM_MODEL=qwen3:8b \
+            -e APP_ENV=production \
+            smart-stock-llm:ci >/dev/null
+
+          docker run -d --name task10-web --network "$network" \
+            -p 127.0.0.1:18082:8080 smart-stock-web:ci >/dev/null
+
+          ready=0
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:18082/llm/api/auth/config >/tmp/task10-auth-config.json; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" -ne 1 ]; then
+            docker logs task10-llm || true
+            docker logs task10-web || true
+            exit 1
+          fi
+
+          status=$(curl -sS -o /tmp/task10-unauth-stock.json -w '%{http_code}' \
+            http://127.0.0.1:18082/stock/api/products)
+          test "$status" = 401
+
+          login_json=$(curl -fsS -H 'Content-Type: application/json' \
+            -d '{"username":"ci-admin","password":"ci-gateway-admin-secret-42x"}' \
+            http://127.0.0.1:18082/llm/api/auth/login)
+          token=$(printf '%s' "$login_json" | python -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+          test -n "$token"
+
+          curl -fsS -H "Authorization: Bearer $token" \
+            http://127.0.0.1:18082/stock/api/products \
+            | python -c 'import json,sys; assert json.load(sys.stdin) == []'
+
+          status=$(curl -sS -o /tmp/task10-write.json -w '%{http_code}' \
+            -X POST -H "Authorization: Bearer $token" \
+            http://127.0.0.1:18082/stock/api/marketplace/orders)
+          test "$status" = 405
+
+          curl -fsS -o /dev/null -X POST -H "Authorization: Bearer $token" \
+            http://127.0.0.1:18082/llm/api/auth/logout
+          status=$(curl -sS -o /tmp/task10-revoked-stock.json -w '%{http_code}' \
+            -H "Authorization: Bearer $token" \
+            http://127.0.0.1:18082/stock/api/products)
+          test "$status" = 401
 
   quality-gate:
     name: Quality gate
