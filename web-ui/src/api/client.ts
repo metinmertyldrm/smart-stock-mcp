@@ -3,7 +3,8 @@ const llm=import.meta.env.VITE_LLM_HOST_URL||'http://localhost:8000';
 export class ApiError extends Error {constructor(message:string,public status:number){super(message)}}
 
 export type AuthMode='anonymous'|'local';
-export type AuthUser={id:string;username:string;displayName:string;role:'VIEWER'|'OPERATOR'|'MANAGER'|'ADMIN';capabilities:string[]};
+export type AuthRole='VIEWER'|'OPERATOR'|'MANAGER'|'ADMIN';
+export type AuthUser={id:string;username:string;displayName:string;role:AuthRole;enabled:boolean;capabilities:string[]};
 type LoginResponse={token:string;expiresAt?:string;user:AuthUser};
 const sessionKey='smart-stock-session-token';let sessionPromise:Promise<string>|null=null;let authModePromise:Promise<AuthMode>|null=null;
 
@@ -14,7 +15,7 @@ async function sessionToken():Promise<string>{const existing=localStorage.getIte
 async function request<T>(url:string,options?:RequestInit):Promise<T>{const isLlm=url.startsWith(llm);const headers:Record<string,string>={'Content-Type':'application/json'};if(isLlm)headers.Authorization=`Bearer ${await sessionToken()}`;if(options?.headers)Object.assign(headers,options.headers);let response:Response;try{response=await fetch(url,{...options,headers})}catch{throw new ApiError('AI servisine şu anda ulaşılamıyor. Lütfen kısa bir süre sonra tekrar deneyin.',0)}if(response.status===401&&isLlm)localStorage.removeItem(sessionKey);if(!response.ok)throw await parseError(response,response.status===401?'Oturum süresi doldu. Lütfen yeniden giriş yapın.':'İstek tamamlanamadı.');if(response.status===204)return undefined as T;return response.json() as Promise<T>}
 
 async function login(username:string,password:string):Promise<AuthUser>{let response:Response;try{response=await fetch(llm+'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({username,password})})}catch{throw new ApiError('AI servisine şu anda ulaşılamıyor. Lütfen kısa bir süre sonra tekrar deneyin.',0)}if(!response.ok)throw await parseError(response,'Giriş yapılamadı.');const body=await response.json() as LoginResponse;if(!body.token||!body.user)throw new ApiError('Giriş yanıtı geçersiz.',500);localStorage.setItem(sessionKey,body.token);return body.user}
-async function logout():Promise<void>{try{await request<void>(llm+'/api/auth/logout',{method:'POST',body:'{}'})}finally{localStorage.removeItem(sessionKey)}}
+async function logout():Promise<void>{try{await request<void>(llm+'/api/auth/logout',{method:'POST'})}finally{localStorage.removeItem(sessionKey)}}
 async function me():Promise<AuthUser>{const body=await request<{user:AuthUser}>(llm+'/api/auth/me');return body.user}
 function clearSession(){localStorage.removeItem(sessionKey)}
 function hasSession(){return Boolean(localStorage.getItem(sessionKey))}
