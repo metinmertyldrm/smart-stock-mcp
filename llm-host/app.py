@@ -67,6 +67,14 @@ async def execute_plan(plan, client, available_tool_names, state=None):
     """
     violation = plan_authorization_violation(plan)
     if violation is not None:
+        if isinstance(plan, dict):
+            plan["authorization"] = {
+                "status": "blocked",
+                "stage": "preflight",
+                "role": violation.role,
+                "stepId": violation.step_id,
+                "tool": violation.tool_name,
+            }
         return {
             "success": False,
             "failed_step": violation.step_id,
