@@ -183,6 +183,15 @@ class IdentityStore:
         with self._connect() as db:
             return int(db.execute("SELECT COUNT(*) FROM users").fetchone()[0])
 
+    def count_enabled_admins(self) -> int:
+        with self._connect() as db:
+            return int(
+                db.execute(
+                    "SELECT COUNT(*) FROM users WHERE role=? AND enabled=1",
+                    (ROLE_ADMIN,),
+                ).fetchone()[0]
+            )
+
     def create_user(
         self,
         username: str,
@@ -258,22 +267,46 @@ class IdentityStore:
     def set_role(self, user_id: str, role: str) -> UserIdentity:
         normalized_role = normalize_role(role)
         with self._connect() as db:
-            cursor = db.execute(
+            row = db.execute("SELECT role,enabled FROM users WHERE id=?", (user_id,)).fetchone()
+            if row is None:
+                raise IdentityError("Kullanıcı bulunamadı.")
+            if (
+                row["role"] == ROLE_ADMIN
+                and bool(row["enabled"])
+                and normalized_role != ROLE_ADMIN
+                and db.execute(
+                    "SELECT COUNT(*) FROM users WHERE role=? AND enabled=1",
+                    (ROLE_ADMIN,),
+                ).fetchone()[0]
+                <= 1
+            ):
+                raise IdentityError("Son aktif yönetici rolü düşürülemez.")
+            db.execute(
                 "UPDATE users SET role=?,updated_at=? WHERE id=?",
                 (normalized_role, now(), user_id),
             )
-            if cursor.rowcount != 1:
-                raise IdentityError("Kullanıcı bulunamadı.")
         return self.get_user(user_id)
 
     def set_enabled(self, user_id: str, enabled: bool) -> UserIdentity:
         with self._connect() as db:
-            cursor = db.execute(
+            row = db.execute("SELECT role,enabled FROM users WHERE id=?", (user_id,)).fetchone()
+            if row is None:
+                raise IdentityError("Kullanıcı bulunamadı.")
+            if (
+                row["role"] == ROLE_ADMIN
+                and bool(row["enabled"])
+                and not enabled
+                and db.execute(
+                    "SELECT COUNT(*) FROM users WHERE role=? AND enabled=1",
+                    (ROLE_ADMIN,),
+                ).fetchone()[0]
+                <= 1
+            ):
+                raise IdentityError("Son aktif yönetici devre dışı bırakılamaz.")
+            db.execute(
                 "UPDATE users SET enabled=?,updated_at=? WHERE id=?",
                 (1 if enabled else 0, now(), user_id),
             )
-            if cursor.rowcount != 1:
-                raise IdentityError("Kullanıcı bulunamadı.")
         return self.get_user(user_id)
 
     def bootstrap_admin(self, username: str | None, password: str | None) -> UserIdentity | None:
