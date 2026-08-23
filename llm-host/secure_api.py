@@ -112,8 +112,8 @@ def is_confirmation_path(path: str) -> bool:
     return path.startswith("/api/conversations/") and path.endswith("/confirm")
 
 
-async def correlate_chat_response(response, request_id: str):
-    """Attach HTTP correlation to JSON chat telemetry and aggregate its trace."""
+async def correlate_chat_response(response, request_id: str, identity=None):
+    """Attach HTTP correlation + authenticated actor to JSON chat telemetry."""
     content_type = response.headers.get("content-type", "")
     if "application/json" not in content_type.casefold() or not hasattr(response, "body_iterator"):
         return response
@@ -140,6 +140,15 @@ async def correlate_chat_response(response, request_id: str):
         )
 
     correlated = correlate_response_payload(payload, request_id)
+    if identity is not None and isinstance(payload, dict):
+        telemetry = payload.setdefault("telemetry", {})
+        if isinstance(telemetry, dict):
+            telemetry["actor"] = {
+                "userId": identity.id,
+                "username": identity.username,
+                "role": identity.role,
+            }
+            correlated = True
     if correlated:
         try:
             persist_correlated_chat_response(payload, getattr(app.state.agent, "store", None))
@@ -337,7 +346,11 @@ async def observe_request(request: Request, call_next):
         response = await call_next(request)
         status_code = response.status_code
         if route in CHAT_ROUTES and status_code < 500:
-            response = await correlate_chat_response(response, request_id)
+            response = await correlate_chat_response(
+                response,
+                request_id,
+                getattr(request.state, "identity", None),
+            )
         response.headers["X-Request-Id"] = request_id
         return response
     except Exception as exc:
