@@ -1,11 +1,11 @@
 import os
 import sys
-import json
 from contextlib import AsyncExitStack
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from mcp.types import TextContent
+
+from rbac import authorize_tool
 
 
 def _server_parameters(server_path: str) -> StdioServerParameters:
@@ -129,7 +129,7 @@ class MCPClient:
         arguments: dict | None = None
     ):
         """
-        Tool'un hangi server'da olduğunu bulur ve çalıştırır.
+        Tool'un hangi server'da olduğunu bulur, RBAC kontrolünden geçirir ve çalıştırır.
         """
 
         if arguments is None:
@@ -146,6 +146,10 @@ class MCPClient:
                 f"'{tool_name}' adlı tool bulunamadı. "
                 f"Mevcut tool'lar: {available_tools}"
             )
+
+        # Final authorization happens immediately before dispatch. This is
+        # independent of the LLM prompt and plan-validation logic.
+        authorize_tool(tool_name)
 
         session = self.sessions[server_name]
 
