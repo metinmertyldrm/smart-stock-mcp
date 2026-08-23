@@ -33,6 +33,7 @@ from observability import (
     reset_request_id,
     set_request_id,
 )
+from rbac import reset_current_role, set_current_role
 from security import DEFAULT_SESSION_DB, SessionError, SessionStore
 from web_api import app
 
@@ -43,7 +44,13 @@ if AUTH_MODE not in {"anonymous", "local"}:
 
 SESSION_PATH = os.getenv("LLM_SESSIONS_DB", DEFAULT_SESSION_DB)
 IDENTITY_PATH = os.getenv("LLM_IDENTITY_DB", SESSION_PATH)
-PUBLIC_PATHS = {"/api/health", "/api/ready", "/api/session", "/api/auth/login"}
+PUBLIC_PATHS = {
+    "/api/health",
+    "/api/ready",
+    "/api/session",
+    "/api/auth/config",
+    "/api/auth/login",
+}
 CHAT_ROUTES = {"/api/chat", "/api/conversations/{conversation_id}/confirm"}
 sessions = SessionStore(SESSION_PATH)
 identities = IdentityStore(IDENTITY_PATH)
@@ -101,6 +108,10 @@ def require_capability(request: Request, capability: str):
     return identity
 
 
+def is_confirmation_path(path: str) -> bool:
+    return path.startswith("/api/conversations/") and path.endswith("/confirm")
+
+
 async def correlate_chat_response(response, request_id: str):
     """Attach HTTP correlation to JSON chat telemetry and aggregate its trace."""
     content_type = response.headers.get("content-type", "")
@@ -148,6 +159,11 @@ async def correlate_chat_response(response, request_id: str):
     )
 
 
+@app.get("/api/auth/config")
+async def auth_config():
+    return {"mode": AUTH_MODE}
+
+
 @app.post("/api/session", status_code=201)
 async def create_session():
     if AUTH_MODE != "anonymous":
@@ -184,7 +200,8 @@ async def me(request: Request):
 
 @app.post("/api/auth/logout", status_code=204)
 async def logout(request: Request):
-    sessions.revoke(request.headers.get("authorization"))
+    authorization = getattr(request.state, "authorization", None)
+    sessions.revoke(authorization)
     return Response(status_code=204, headers={"Cache-Control": "no-store"})
 
 
@@ -244,8 +261,11 @@ async def metric_snapshot(request: Request):
 async def require_session(request: Request, call_next):
     if request.method == "OPTIONS" or request.url.path in PUBLIC_PATHS:
         return await call_next(request)
+
+    authorization = request.headers.get("authorization")
+    role_token = None
     try:
-        principal = sessions.principal_for_authorization(request.headers.get("authorization"))
+        principal = sessions.principal_for_authorization(authorization)
         identity = None
         if AUTH_MODE == "local":
             if principal.user_id is None:
@@ -276,10 +296,31 @@ async def require_session(request: Request, call_next):
             content={"detail": "Geçerli bir oturum gerekli."},
             headers={"WWW-Authenticate": "Bearer", "Cache-Control": "no-store"},
         )
+
+    if AUTH_MODE == "local" and is_confirmation_path(request.url.path) and not identity.has("confirm"):
+        emit_event(
+            "security.authorization.rejected",
+            level=logging.WARNING,
+            method=request.method,
+            route=normalize_route(request.url.path),
+            role=identity.role,
+            capability="confirm",
+        )
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Bu işlemi onaylama yetkiniz yok."},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    request.state.authorization = authorization
     request.scope["headers"] = authenticated_headers(
         list(request.scope.get("headers", [])), owner_id, role
     )
-    return await call_next(request)
+    role_token = set_current_role(role)
+    try:
+        return await call_next(request)
+    finally:
+        reset_current_role(role_token)
 
 
 @app.middleware("http")
