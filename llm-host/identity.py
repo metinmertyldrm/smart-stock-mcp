@@ -44,6 +44,17 @@ SCRYPT_N = 1 << 14
 SCRYPT_R = 8
 SCRYPT_P = 1
 SCRYPT_DKLEN = 32
+_DUMMY_SALT = b"smart-stock-dummy-salt"
+_DUMMY_DIGEST = hashlib.scrypt(
+    b"not-a-real-user-password",
+    salt=_DUMMY_SALT,
+    n=SCRYPT_N,
+    r=SCRYPT_R,
+    p=SCRYPT_P,
+    dklen=SCRYPT_DKLEN,
+)
+_DUMMY_SALT_B64 = base64.urlsafe_b64encode(_DUMMY_SALT).decode("ascii")
+_DUMMY_DIGEST_B64 = base64.urlsafe_b64encode(_DUMMY_DIGEST).decode("ascii")
 
 
 class IdentityError(ValueError):
@@ -72,6 +83,7 @@ class UserIdentity:
             "username": self.username,
             "displayName": self.display_name,
             "role": self.role,
+            "enabled": self.enabled,
             "capabilities": sorted(self.capabilities),
         }
 
@@ -252,7 +264,10 @@ class IdentityStore:
             raise IdentityError("Kullanıcı adı veya parola hatalı.") from None
         with self._connect() as db:
             row = db.execute("SELECT * FROM users WHERE username=?", (normalized,)).fetchone()
-        if row is None or not verify_password(password, row["password_salt"], row["password_hash"]):
+        if row is None:
+            verify_password(password, _DUMMY_SALT_B64, _DUMMY_DIGEST_B64)
+            raise IdentityError("Kullanıcı adı veya parola hatalı.")
+        if not verify_password(password, row["password_salt"], row["password_hash"]):
             raise IdentityError("Kullanıcı adı veya parola hatalı.")
         identity = self._identity(row)
         if not identity.enabled:
@@ -307,6 +322,18 @@ class IdentityStore:
                 "UPDATE users SET enabled=?,updated_at=? WHERE id=?",
                 (1 if enabled else 0, now(), user_id),
             )
+        return self.get_user(user_id)
+
+    def set_password(self, user_id: str, password: str) -> UserIdentity:
+        validate_password(password)
+        salt, digest = hash_password(password)
+        with self._connect() as db:
+            cursor = db.execute(
+                "UPDATE users SET password_salt=?,password_hash=?,updated_at=? WHERE id=?",
+                (salt, digest, now(), user_id),
+            )
+            if cursor.rowcount != 1:
+                raise IdentityError("Kullanıcı bulunamadı.")
         return self.get_user(user_id)
 
     def bootstrap_admin(self, username: str | None, password: str | None) -> UserIdentity | None:
