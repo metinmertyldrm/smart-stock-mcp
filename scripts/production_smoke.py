@@ -170,11 +170,6 @@ def run_http_checks(web_url: str, timeout: float, *, username: str, password: st
         raise ProductionSmokeFailure(f"Gateway health returned HTTP {status}: {body!r}")
     print("  [OK] Production gateway health")
 
-    status, products = request("GET", f"{stock_url}/api/products", timeout=timeout)
-    if status != 200 or not isinstance(products, list):
-        raise ProductionSmokeFailure(f"Read-only stock gateway returned HTTP {status}")
-    print(f"  [OK] Read-only stock gateway: {len(products)} products visible")
-
     status, readiness = request("GET", f"{llm_url}/api/ready", timeout=timeout)
     if status != 200 or not isinstance(readiness, dict) or readiness.get("status") != "ready":
         raise ProductionSmokeFailure(f"LLM readiness returned HTTP {status}: {readiness!r}")
@@ -193,16 +188,42 @@ def run_http_checks(web_url: str, timeout: float, *, username: str, password: st
     if status != 401:
         raise ProductionSmokeFailure(f"Unauthenticated metrics returned HTTP {status}, expected 401")
 
+    status, _ = request("GET", f"{stock_url}/api/products", timeout=timeout)
+    if status != 401:
+        raise ProductionSmokeFailure(f"Unauthenticated stock read returned HTTP {status}, expected 401")
+    print("  [OK] Production stock reads require bearer authentication")
+
     token = login(llm_url, username, password, timeout)
     auth_header = {"Authorization": f"Bearer {token}"}
     status, me = request("GET", f"{llm_url}/api/auth/me", headers=auth_header, timeout=timeout)
     if status != 200 or not isinstance(me, dict) or (me.get("user") or {}).get("role") != "ADMIN":
         raise ProductionSmokeFailure(f"Authenticated identity returned HTTP {status}")
 
+    status, products = request(
+        "GET",
+        f"{stock_url}/api/products",
+        headers=auth_header,
+        timeout=timeout,
+    )
+    if status != 200 or not isinstance(products, list):
+        raise ProductionSmokeFailure(f"Authenticated stock gateway returned HTTP {status}")
+    print(f"  [OK] Authenticated read-only stock gateway: {len(products)} products visible")
+
     status, metrics = request("GET", f"{llm_url}/api/metrics", headers=auth_header, timeout=timeout)
     if status != 200 or not isinstance(metrics, dict) or "http" not in metrics:
         raise ProductionSmokeFailure(f"Admin metrics returned HTTP {status}")
     print("  [OK] Metrics require authenticated ADMIN role")
+
+    status, _ = request(
+        "POST",
+        f"{stock_url}/api/marketplace/orders",
+        payload={"draftId": -1},
+        headers=auth_header,
+        timeout=timeout,
+    )
+    if status != 405:
+        raise ProductionSmokeFailure(f"Browser stock mutation returned HTTP {status}, expected 405")
+    print("  [OK] Browser-facing stock mutations remain blocked")
 
     status, _ = request("POST", f"{llm_url}/api/auth/logout", headers=auth_header, timeout=timeout)
     if status != 204:
@@ -210,17 +231,10 @@ def run_http_checks(web_url: str, timeout: float, *, username: str, password: st
     status, _ = request("GET", f"{llm_url}/api/metrics", headers=auth_header, timeout=timeout)
     if status != 401:
         raise ProductionSmokeFailure(f"Revoked session returned HTTP {status}, expected 401")
-    print("  [OK] Logout revokes the bearer session")
-
-    status, _ = request(
-        "POST",
-        f"{stock_url}/api/marketplace/orders",
-        payload={"draftId": -1},
-        timeout=timeout,
-    )
-    if status != 405:
-        raise ProductionSmokeFailure(f"Browser stock mutation returned HTTP {status}, expected 405")
-    print("  [OK] Browser-facing stock mutations remain blocked")
+    status, _ = request("GET", f"{stock_url}/api/products", headers=auth_header, timeout=timeout)
+    if status != 401:
+        raise ProductionSmokeFailure(f"Revoked stock session returned HTTP {status}, expected 401")
+    print("  [OK] Logout revokes LLM and stock gateway access")
 
 
 def run(
