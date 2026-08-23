@@ -5,7 +5,7 @@ from contextlib import AsyncExitStack
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from rbac import authorize_tool
+from rbac import authorize_tool, tool_visible
 
 
 def _server_parameters(server_path: str) -> StdioServerParameters:
@@ -106,9 +106,7 @@ class MCPClient:
         return True
 
     async def list_tools(self):
-        """
-        Bütün server'lardaki tool'ları tek listede döndürür.
-        """
+        """Return the request-visible tool catalog across all MCP servers."""
 
         all_tools = []
         seen_tool_names = set()
@@ -119,6 +117,8 @@ class MCPClient:
                 if tool.name in seen_tool_names:
                     continue
                 seen_tool_names.add(tool.name)
+                if not tool_visible(tool.name):
+                    continue
                 all_tools.append(tool)
 
         return all_tools
