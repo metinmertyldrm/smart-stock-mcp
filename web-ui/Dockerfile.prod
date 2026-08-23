@@ -44,9 +44,10 @@ RUN sed -i 's#pid[[:space:]].*;#pid /tmp/nginx.pid;#' /etc/nginx/nginx.conf \
 
 COPY nginx.prod.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
+# auth_request is required by nginx.prod.conf. Static upstream names only exist
+# on the Compose network, so full nginx -t validation occurs at container start.
 RUN chown -R nginx:nginx /usr/share/nginx/html /etc/nginx/conf.d/default.conf \
-    && nginx -V 2>&1 | grep -q -- '--with-http_auth_request_module' \
-    && nginx -t
+    && nginx -V 2>&1 | grep -q -- '--with-http_auth_request_module'
 
 USER nginx
 EXPOSE 8080
