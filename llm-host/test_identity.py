@@ -105,15 +105,22 @@ class IdentityStoreTest(unittest.TestCase):
         self.assertEqual(self.store.get_user(admin.id).role, ROLE_ADMIN)
         self.assertTrue(self.store.get_user(admin.id).enabled)
 
-    def test_admin_can_be_changed_when_another_active_admin_exists(self):
+    def test_one_admin_can_change_when_another_active_admin_remains(self):
         first = self.store.bootstrap_admin("admin.one", "bootstrap-admin-password")
         second = self.store.create_user("admin.two", "second-admin-password", role=ROLE_ADMIN)
         self.assertEqual(self.store.count_enabled_admins(), 2)
         demoted = self.store.set_role(first.id, ROLE_MANAGER)
         self.assertEqual(demoted.role, ROLE_MANAGER)
-        disabled = self.store.set_enabled(second.id, False)
+        self.assertEqual(self.store.count_enabled_admins(), 1)
+        with self.assertRaisesRegex(IdentityError, "Son aktif yönetici devre dışı"):
+            self.store.set_enabled(second.id, False)
+
+    def test_one_of_two_active_admins_can_be_disabled(self):
+        first = self.store.bootstrap_admin("admin.one", "bootstrap-admin-password")
+        self.store.create_user("admin.two", "second-admin-password", role=ROLE_ADMIN)
+        disabled = self.store.set_enabled(first.id, False)
         self.assertFalse(disabled.enabled)
-        self.assertEqual(self.store.count_enabled_admins(), 0)
+        self.assertEqual(self.store.count_enabled_admins(), 1)
 
 
 if __name__ == "__main__":
