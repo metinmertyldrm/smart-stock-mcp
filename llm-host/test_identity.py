@@ -88,12 +88,32 @@ class IdentityStoreTest(unittest.TestCase):
         self.assertIsNotNone(admin)
         self.assertEqual(admin.role, ROLE_ADMIN)
         self.assertTrue(admin.has("users"))
+        self.assertEqual(self.store.count_enabled_admins(), 1)
         self.assertIsNone(self.store.bootstrap_admin("other", "another-admin-password"))
         self.assertEqual(self.store.count_users(), 1)
 
     def test_bootstrap_requires_credentials_when_empty(self):
         with self.assertRaisesRegex(IdentityError, "İlk yönetici"):
             self.store.bootstrap_admin(None, None)
+
+    def test_last_active_admin_cannot_be_demoted_or_disabled(self):
+        admin = self.store.bootstrap_admin("admin", "bootstrap-admin-password")
+        with self.assertRaisesRegex(IdentityError, "Son aktif yönetici rolü"):
+            self.store.set_role(admin.id, ROLE_MANAGER)
+        with self.assertRaisesRegex(IdentityError, "Son aktif yönetici devre dışı"):
+            self.store.set_enabled(admin.id, False)
+        self.assertEqual(self.store.get_user(admin.id).role, ROLE_ADMIN)
+        self.assertTrue(self.store.get_user(admin.id).enabled)
+
+    def test_admin_can_be_changed_when_another_active_admin_exists(self):
+        first = self.store.bootstrap_admin("admin.one", "bootstrap-admin-password")
+        second = self.store.create_user("admin.two", "second-admin-password", role=ROLE_ADMIN)
+        self.assertEqual(self.store.count_enabled_admins(), 2)
+        demoted = self.store.set_role(first.id, ROLE_MANAGER)
+        self.assertEqual(demoted.role, ROLE_MANAGER)
+        disabled = self.store.set_enabled(second.id, False)
+        self.assertFalse(disabled.enabled)
+        self.assertEqual(self.store.count_enabled_admins(), 0)
 
 
 if __name__ == "__main__":
