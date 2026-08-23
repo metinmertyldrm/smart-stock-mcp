@@ -1,4 +1,5 @@
 import {createContext,useContext,useEffect,useMemo,useState} from 'react';
+import {useQueryClient} from '@tanstack/react-query';
 import {LockKeyhole,LogIn,RefreshCw,ShieldCheck} from 'lucide-react';
 import {api,ApiError,authChangedEvent,type AuthMode,type AuthUser} from '../api/client';
 import {Spinner} from '../components/States';
@@ -9,14 +10,17 @@ const AuthContext=createContext<AuthContextValue|null>(null);
 export function useAuth(){const value=useContext(AuthContext);if(!value)throw new Error('useAuth must be used inside AuthProvider');return value}
 
 export function AuthProvider({children}:{children:React.ReactNode}){
+ const queryClient=useQueryClient();
  const [mode,setMode]=useState<AuthMode|null>(null);const [user,setUser]=useState<AuthUser|null>(null);const [loading,setLoading]=useState(true);const [startupError,setStartupError]=useState('');
- const initialize=async()=>{setLoading(true);setStartupError('');try{const nextMode=await api.auth.mode();setMode(nextMode);if(nextMode==='local'){if(api.auth.hasSession()){try{setUser(await api.auth.me())}catch{api.auth.clearSession();setUser(null)}}else setUser(null)}}catch(exc){setStartupError(exc instanceof ApiError?exc.message:'Kimlik servisine ulaşılamadı.')}finally{setLoading(false)}};
+ const acceptUser=(current:AuthUser)=>{queryClient.clear();setUser(current)};
+ const forgetUser=()=>{queryClient.clear();setUser(null)};
+ const initialize=async()=>{setLoading(true);setStartupError('');try{const nextMode=await api.auth.mode();setMode(nextMode);if(nextMode==='local'){if(api.auth.hasSession()){try{acceptUser(await api.auth.me())}catch{api.auth.clearSession();forgetUser()}}else forgetUser()}}catch(exc){setStartupError(exc instanceof ApiError?exc.message:'Kimlik servisine ulaşılamadı.')}finally{setLoading(false)}};
  useEffect(()=>{void initialize()},[]);
- useEffect(()=>{const changed=()=>{if(mode==='local'&&!api.auth.hasSession())setUser(null)};window.addEventListener(authChangedEvent,changed);return()=>window.removeEventListener(authChangedEvent,changed)},[mode]);
- const value=useMemo<AuthContextValue|null>(()=>mode?{mode,user,login:async(username,password)=>{const current=await api.auth.login(username,password);setUser(current)},logout:async()=>{try{await api.auth.logout()}finally{setUser(null)}}}:null,[mode,user]);
+ useEffect(()=>{const changed=()=>{if(mode==='local'&&!api.auth.hasSession())forgetUser()};window.addEventListener(authChangedEvent,changed);return()=>window.removeEventListener(authChangedEvent,changed)},[mode,queryClient]);
+ const value=useMemo<AuthContextValue|null>(()=>mode?{mode,user,login:async(username,password)=>{acceptUser(await api.auth.login(username,password))},logout:async()=>{try{await api.auth.logout()}finally{forgetUser()}}}:null,[mode,user,queryClient]);
  if(loading)return <AuthLoading/>;
  if(startupError||!mode)return <AuthStartupError message={startupError||'Kimlik yapılandırması alınamadı.'} retry={initialize}/>;
- if(mode==='local'&&!user)return <LoginPage onLogin={async(username,password)=>{const current=await api.auth.login(username,password);setUser(current)}}/>;
+ if(mode==='local'&&!user)return <LoginPage onLogin={async(username,password)=>{acceptUser(await api.auth.login(username,password))}}/>;
  return <AuthContext.Provider value={value!}>{children}</AuthContext.Provider>;
 }
 
