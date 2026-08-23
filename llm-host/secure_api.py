@@ -22,6 +22,7 @@ from observability import (
     emit_event,
     metrics,
     normalize_route,
+    persist_correlated_chat_response,
     readiness_snapshot,
     reset_request_id,
     set_request_id,
@@ -73,7 +74,17 @@ async def correlate_chat_response(response, request_id: str):
             background=background,
         )
 
-    correlate_response_payload(payload, request_id)
+    correlated = correlate_response_payload(payload, request_id)
+    if correlated:
+        try:
+            persist_correlated_chat_response(payload, getattr(app.state.agent, "store", None))
+        except Exception as exc:
+            # Correlation persistence is observability-only; never fail a valid chat.
+            emit_event(
+                "chat.correlation.persistence_failed",
+                level=logging.WARNING,
+                errorType=type(exc).__name__,
+            )
     metrics.record_chat_response(payload)
     return JSONResponse(
         status_code=response.status_code,
