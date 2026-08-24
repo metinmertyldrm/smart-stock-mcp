@@ -323,9 +323,9 @@ class LLMService:
             }
         }
         if json_mode:
-            # Ollama JSON mode constrains Qwen's visible response to a parseable
-            # envelope instead of allowing chain-of-thought prose to leak.
-            payload["format"] = "json"
+            # A JSON schema is stricter than plain JSON mode and prevents Qwen
+            # from adding public reasoning fields around the requested envelope.
+            payload["format"] = json_mode if isinstance(json_mode, dict) else "json"
 
         try:
             response = requests.post(
