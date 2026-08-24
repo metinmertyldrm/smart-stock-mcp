@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import unicodedata
 
 import requests
@@ -28,9 +29,12 @@ FAST_INFO_BLOCKERS = (
 )
 READ_ONLY_NEGATIONS = (
     "henuz siparis olusturma",
+    "henuz taslak veya siparis olusturma",
+    "henuz taslak ya da siparis olusturma",
     "do not create an order",
     "do not place an order",
 )
+FAST_OFFER_ROUTE_PREFIX = "search_offers:"
 OUT_OF_STOCK_TERMS = (
     "stokta olmayan",
     "stok yok",
@@ -84,9 +88,38 @@ def _normalize_for_route(text):
     return normalized.replace("ı", "i")
 
 
+def _fast_offer_query(user_message, normalized):
+    """Extract a product query from an explicit read-only offer comparison."""
+    if not any(term in normalized for term in ("marketplace", "pazaryeri")):
+        return None
+    if "teklif" not in normalized:
+        return None
+    if not any(term in normalized for term in ("karsilastir", "listele")):
+        return None
+
+    blocker_text = normalized
+    for phrase in READ_ONLY_NEGATIONS:
+        blocker_text = blocker_text.replace(phrase, "")
+    if any(
+        term in blocker_text
+        for term in ("taslak", "siparis", "satin al", "purchase", "draft", "order")
+    ):
+        return None
+
+    parts = re.split(r"\s+için\s+", (user_message or "").strip(), maxsplit=1, flags=re.IGNORECASE)
+    if len(parts) != 2:
+        return None
+    query = parts[0].strip()
+    return query or None
+
+
 def _fast_read_only_tool(user_message):
     """Return a safe single read tool for unambiguous stock-state retrievals."""
     normalized = _normalize_for_route(user_message)
+    offer_query = _fast_offer_query(user_message, normalized)
+    if offer_query:
+        return FAST_OFFER_ROUTE_PREFIX + offer_query
+
     blocker_text = normalized
     for phrase in READ_ONLY_NEGATIONS:
         blocker_text = blocker_text.replace(phrase, "")
@@ -176,7 +209,20 @@ Rules:
 
 def _fast_execution_plan(route):
     """Build an allow-listed deterministic plan for a preclassified route."""
-    if route == SAFE_DRAFT_ROUTE:
+    if route.startswith(FAST_OFFER_ROUTE_PREFIX):
+        query = route.removeprefix(FAST_OFFER_ROUTE_PREFIX)
+        plan = {
+            "type": "execution_plan",
+            "goal": "REASON",
+            "steps": [
+                {
+                    "id": "step_1",
+                    "tool": "search_offers",
+                    "arguments": {"query": query},
+                }
+            ],
+        }
+    elif route == SAFE_DRAFT_ROUTE:
         plan = {
             "type": "execution_plan",
             "goal": "DRAFT",
