@@ -285,11 +285,12 @@ class LLMService:
         if self.connect_timeout <= 0 or self.read_timeout <= 0:
             raise ValueError("OLLAMA_CONNECT_TIMEOUT and OLLAMA_READ_TIMEOUT must be positive")
 
-    def generate(self, messages):
-        messages, fast_route = prepare_inference_messages(messages)
-        if fast_route:
-            print(f"[LLM] deterministic planner bypass: {fast_route} (Ollama skipped)")
-            return _fast_execution_plan(fast_route)
+    def generate(self, messages, json_mode=False, allow_fast_route=True):
+        if allow_fast_route:
+            messages, fast_route = prepare_inference_messages(messages)
+            if fast_route:
+                print(f"[LLM] deterministic planner bypass: {fast_route} (Ollama skipped)")
+                return _fast_execution_plan(fast_route)
 
         prompt_parts = []
         for message in messages:
@@ -317,6 +318,10 @@ class LLMService:
                 "num_ctx": self.num_ctx
             }
         }
+        if json_mode:
+            # Ollama JSON mode constrains Qwen's visible response to a parseable
+            # envelope instead of allowing chain-of-thought prose to leak.
+            payload["format"] = "json"
 
         try:
             response = requests.post(
