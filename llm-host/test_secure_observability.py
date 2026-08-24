@@ -13,10 +13,10 @@ from starlette.responses import StreamingResponse
 _SESSION_DB = os.path.join(tempfile.gettempdir(), f"smart-stock-observability-{os.getpid()}.db")
 os.environ["LLM_SESSIONS_DB"] = _SESSION_DB
 os.environ["LLM_APPROVAL_AUDIT_DB"] = _SESSION_DB
-os.environ["LLM_AUTH_MODE"] = "local"
 
 from observability import metrics  # noqa: E402
 from rbac import reset_current_role, set_current_role  # noqa: E402
+import secure_api as secure_api_module  # noqa: E402
 from secure_api import (  # noqa: E402
     app,
     approval_audits,
@@ -135,9 +135,12 @@ class SecuredResponseObservabilityTest(unittest.TestCase):
         app.state.agent = SimpleNamespace(client=client)
         request = SimpleNamespace(state=SimpleNamespace(identity=identity("MANAGER")))
         token = set_current_role("MANAGER")
+        previous_auth_mode = secure_api_module.AUTH_MODE
+        secure_api_module.AUTH_MODE = "local"
         try:
             result = asyncio.run(approve_purchase_draft(42, request))
         finally:
+            secure_api_module.AUTH_MODE = previous_auth_mode
             reset_current_role(token)
 
         self.assertTrue(result["success"])
@@ -159,9 +162,13 @@ class SecuredResponseObservabilityTest(unittest.TestCase):
         client = FakeApprovalClient()
         app.state.agent = SimpleNamespace(client=client)
         request = SimpleNamespace(state=SimpleNamespace(identity=identity("OPERATOR")))
-
-        with self.assertRaises(HTTPException) as raised:
-            asyncio.run(approve_purchase_draft(43, request))
+        previous_auth_mode = secure_api_module.AUTH_MODE
+        secure_api_module.AUTH_MODE = "local"
+        try:
+            with self.assertRaises(HTTPException) as raised:
+                asyncio.run(approve_purchase_draft(43, request))
+        finally:
+            secure_api_module.AUTH_MODE = previous_auth_mode
 
         self.assertEqual(raised.exception.status_code, 403)
         self.assertEqual(client.calls, [])

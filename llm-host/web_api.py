@@ -1,5 +1,6 @@
 """Persistent HTTP transport for the Smart Stock agent."""
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -453,12 +454,27 @@ class AgentApplication:
 
     async def _generate(self, messages, *, json_mode=False, num_predict=None):
         """Run Ollama outside the event loop and never bypass it for web requests."""
+        options = {
+            "json_mode": json_mode,
+            "allow_fast_route": False,
+            "num_predict": num_predict,
+        }
+        # Production LLMService accepts every option above.  Small injected
+        # adapters used by tests and integrations may intentionally implement
+        # only generate(messages); keep that narrow protocol compatible without
+        # catching TypeError raised inside the model implementation itself.
+        parameters = inspect.signature(self.llm.generate).parameters.values()
+        accepts_options = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters
+        )
+        if not accepts_options:
+            supported = {parameter.name for parameter in parameters}
+            options = {key: value for key, value in options.items() if key in supported}
         return await asyncio.to_thread(
             self.llm.generate,
             messages,
-            json_mode=json_mode,
-            allow_fast_route=False,
-            num_predict=num_predict,
+            **options,
         )
 
     async def chat(self, conversation_id, message, owner_id="anonymous"):
