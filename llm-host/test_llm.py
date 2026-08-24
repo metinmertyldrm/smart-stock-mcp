@@ -18,7 +18,7 @@ class LLMServiceTest(unittest.TestCase):
         response.raise_for_status.assert_called_once_with()
         payload = post.call_args.kwargs["json"]
         self.assertEqual(payload["model"], "qwen3:8b")
-        self.assertEqual(payload["prompt"], "user: hello\nassistant:")
+        self.assertEqual(payload["prompt"], "/no_think\nuser: hello\nassistant:")
         self.assertFalse(payload["stream"])
         self.assertFalse(payload["think"])
         # num_predict/num_ctx artik env ile ayarlanabilir; varsayilanlari dogrula.
