@@ -41,6 +41,12 @@ NEGATED_WRITE_PHRASES = (
     "do not place an order",
 )
 CONFIRM_INTENT_WORDS = ("evet", "onay", "onayla", "onaylıyorum", "devam", "tamam", "yes", "confirm")
+ANSWER_SCHEMA = {
+    "type": "object",
+    "properties": {"answer": {"type": "string"}},
+    "required": ["answer"],
+    "additionalProperties": False,
+}
 
 
 def strip_negated_write_phrases(message):
@@ -139,6 +145,107 @@ def budget_replenishment_plan(message):
             },
         ],
     }
+
+
+def prior_plan_draft_plan(message, state):
+    """Convert the complete previous procurement plan into a draft."""
+    normalized = strip_negated_write_phrases(message)
+    asks_for_draft = (
+        "taslak" in normalized
+        and any(term in normalized for term in ("oluştur", "olustur", "hazırla", "hazirla"))
+    )
+    if not asks_for_draft:
+        return None
+
+    source = None
+    if is_plan_valid(getattr(state, "last_plan", None)):
+        source = "last_plan"
+    elif getattr(state, "last_reference_id", None):
+        reference = state.references.get(state.last_reference_id)
+        if (
+            isinstance(reference, dict)
+            and reference.get("type") == "procurement_plan"
+            and reference.get("source_tool") == "create_procurement_plan"
+        ):
+            source = "last_reference"
+    if source is None:
+        return None
+
+    return {
+        "type": "execution_plan",
+        "goal": "DRAFT",
+        "steps": [{
+            "id": "step_1",
+            "tool": "create_purchase_draft",
+            "arguments": {
+                "items": {
+                    "$from_context": source,
+                    "$transform": "plan_to_draft_items",
+                }
+            },
+        }],
+    }
+
+
+def _turkish_money(value):
+    try:
+        rendered = f"{float(value):,.2f}"
+    except (TypeError, ValueError):
+        return str(value)
+    return rendered.replace(",", "_").replace(".", ",").replace("_", ".")
+
+
+def offer_tradeoff_fallback(message, result):
+    """Give a focused safe answer when Qwen's final JSON is truncated."""
+    normalized = strip_negated_write_phrases(message)
+    asks_tradeoff = (
+        "en ucuz" in normalized
+        and ("en hızlı" in normalized or "en hizli" in normalized)
+        and ("karşılaştır" in normalized or "karsilastir" in normalized)
+    )
+    if not asks_tradeoff or not isinstance(result, dict):
+        return None
+
+    offers = result.get("offers")
+    comparison = result.get("hesaplanan_karsilastirma")
+    if not isinstance(offers, list) or not isinstance(comparison, dict):
+        return None
+
+    def by_id(offer_id):
+        return next(
+            (offer for offer in offers if str(offer.get("id")) == str(offer_id)),
+            None,
+        )
+
+    cheapest = by_id(comparison.get("cheapestOfferId"))
+    fastest = by_id(comparison.get("fastestOfferId"))
+    if not isinstance(cheapest, dict) or not isinstance(fastest, dict):
+        return None
+
+    def seller_name(offer):
+        seller = offer.get("seller")
+        return seller.get("name") if isinstance(seller, dict) else offer.get("sellerName")
+
+    cheapest_cost = cheapest.get("totalCost")
+    fastest_cost = fastest.get("totalCost")
+    cheapest_days = cheapest.get("deliveryTimeDays")
+    fastest_days = fastest.get("deliveryTimeDays")
+    try:
+        cost_difference = float(fastest_cost) - float(cheapest_cost)
+        day_difference = int(cheapest_days) - int(fastest_days)
+    except (TypeError, ValueError):
+        return None
+
+    return (
+        f"En ucuz seçenek {seller_name(cheapest)}: "
+        f"{_turkish_money(cheapest_cost)} TL ve {cheapest_days} gün teslimat. "
+        f"En hızlı seçenek {seller_name(fastest)}: "
+        f"{_turkish_money(fastest_cost)} TL ve {fastest_days} gün teslimat. "
+        f"En hızlı plan {_turkish_money(cost_difference)} TL daha pahalıdır "
+        f"ancak {day_difference} gün daha erken teslim edilir. "
+        "Bütçe öncelikliyse en ucuz, teslimat hızı öncelikliyse en hızlı seçenek uygundur. "
+        "Taslak veya sipariş oluşturulmadı."
+    )
 
 
 def structured_answer(raw, fallback):
@@ -394,7 +501,7 @@ class AgentApplication:
             # Model çağrısı her zaman önce yapılır. Bilinen bir teklif takip isteğinde
             # bozuk JSON güvenli bir read-only MCP planına düşer; diğer istekler normal
             # model onarım akışını kullanır.
-            plan = prior_offer_refresh_plan(message, state)
+            plan = prior_plan_draft_plan(message, state) or prior_offer_refresh_plan(message, state)
             if plan is None:
                 plan = await self.repair_invalid_plan(
                     system_prompt, message, raw, exc, state, conversation_id
@@ -427,6 +534,17 @@ class AgentApplication:
             repair_summary = (
                 "Toplam bütçeli eksik stok isteği, ürün kimliği uydurulmadan tüm "
                 "replenishment verisini kullanan güvenli planla doğrulandı."
+            )
+
+        # "Buna göre taslak oluştur" means the complete previously computed
+        # procurement plan, never an arbitrary single product selected by the model.
+        safe_draft_plan = prior_plan_draft_plan(message, state)
+        if safe_draft_plan is not None and plan != safe_draft_plan:
+            plan = safe_draft_plan
+            repaired = True
+            repair_summary = (
+                "Önceki satın alma planının tamamı güvenli biçimde sipariş "
+                "taslağına dönüştürülecek şekilde plan doğrulandı."
             )
 
         if permission == "PLAN" and any(s.get("tool") in WRITE_TOOLS for s in plan.get("steps", [])):
@@ -483,6 +601,7 @@ class AgentApplication:
                 result = execution.get("results", {}).get(step_id)
                 if not isinstance(result, dict) or result.get("success") is False:
                     continue
+                state.last_plan = result
                 arguments = resolve_step_arguments(step.get("arguments", {}), execution["results"], state)
                 cached_plan = CachedProcurementPlan(
                     objective=arguments.get("objective", "CHEAPEST"),
@@ -516,10 +635,10 @@ class AgentApplication:
             reasoning_data = clean_tool_results_for_reasoning(execution.get("results", {}))
             raw_answer = await self._generate(
                 [{"role": "system", "content": get_reasoning_prompt(message, reasoning_data)}],
-                json_mode=True,
+                json_mode=ANSWER_SCHEMA,
                 num_predict=512,
             )
-            fallback = (
+            fallback = offer_tradeoff_fallback(message, final) or (
                 format_final_answer(final, last_tool)
                 if last_tool
                 else format_final_answer(reasoning_data)
