@@ -15,8 +15,8 @@ let sessionPromise:Promise<string>|null=null;
 let authConfigPromise:Promise<AuthConfig>|null=null;
 const stockUsesSameOriginGateway=backend==='/stock'||backend.startsWith('/stock/');
 
-function notifyAuthChange(){
-  try{localStorage.setItem(authEpochKey,`${Date.now()}-${Math.random()}`)}catch{/* storage may be unavailable */}
+function notifyAuthChange(broadcast=true){
+  if(broadcast){try{localStorage.setItem(authEpochKey,`${Date.now()}-${Math.random()}`)}catch{/* storage may be unavailable */}}
   window.dispatchEvent(new Event(authChangedEvent));
 }
 function storeAnonymousSession(token:string){localStorage.setItem(sessionKey,token);notifyAuthChange()}
@@ -32,7 +32,7 @@ function isMutation(method?:string){return ['POST','PUT','PATCH','DELETE'].inclu
 async function request<T>(url:string,options?:RequestInit):Promise<T>{const isLlm=url.startsWith(llm);const isBackend=url.startsWith(backend);const config=(isLlm||isBackend&&stockUsesSameOriginGateway)?await authConfig():null;const localGatewayBackend=isBackend&&stockUsesSameOriginGateway&&config?.mode==='local';const protectedRequest=isLlm||localGatewayBackend;const headers:Record<string,string>={'Content-Type':'application/json'};let credentials:RequestCredentials|undefined;
 if(protectedRequest&&config?.mode==='local'){credentials='include';if(isLlm&&isMutation(options?.method)){const csrf=cookieValue(csrfCookieName);if(csrf)headers[config.csrfHeader||'X-CSRF-Token']=csrf}}
 else if(protectedRequest){headers.Authorization=`Bearer ${await anonymousSessionToken()}`}
-if(options?.headers)Object.assign(headers,options.headers);let response:Response;try{response=await fetch(url,{...options,headers,credentials})}catch{throw new ApiError('AI servisine şu anda ulaşılamıyor. Lütfen kısa bir süre sonra tekrar deneyin.',0)}if(response.status===401&&protectedRequest){if(config?.mode==='anonymous')clearClientSession();else notifyAuthChange()}if(!response.ok)throw await parseError(response,response.status===401?'Oturum süresi doldu. Lütfen yeniden giriş yapın.':'İstek tamamlanamadı.');if(response.status===204)return undefined as T;return response.json() as Promise<T>}
+if(options?.headers)Object.assign(headers,options.headers);let response:Response;try{response=await fetch(url,{...options,headers,credentials})}catch{throw new ApiError('AI servisine şu anda ulaşılamıyor. Lütfen kısa bir süre sonra tekrar deneyin.',0)}if(response.status===401&&protectedRequest){if(config?.mode==='anonymous')clearClientSession();else notifyAuthChange(false)}if(!response.ok)throw await parseError(response,response.status===401?'Oturum süresi doldu. Lütfen yeniden giriş yapın.':'İstek tamamlanamadı.');if(response.status===204)return undefined as T;return response.json() as Promise<T>}
 
 async function login(username:string,password:string):Promise<AuthUser>{let response:Response;try{response=await fetch(llm+'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},credentials:'include',body:JSON.stringify({username,password})})}catch{throw new ApiError('AI servisine şu anda ulaşılamıyor. Lütfen kısa bir süre sonra tekrar deneyin.',0)}if(!response.ok)throw await parseError(response,'Giriş yapılamadı.');const body=await response.json() as LoginResponse;if(!body.user)throw new ApiError('Giriş yanıtı geçersiz.',500);localStorage.removeItem(sessionKey);notifyAuthChange();return body.user}
 async function logout():Promise<void>{try{await request<void>(llm+'/api/auth/logout',{method:'POST'})}finally{clearClientSession();notifyAuthChange()}}
