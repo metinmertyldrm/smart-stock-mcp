@@ -1,8 +1,8 @@
-"""Security primitives for anonymous LLM-host sessions.
+"""Security primitives for Smart Stock bearer sessions.
 
-The browser receives an opaque random bearer token. Only its SHA-256 digest is
-stored server-side, so a leaked SQLite file does not immediately reveal active
-session credentials.
+Bearer credentials remain opaque random tokens and only their SHA-256 digests
+are persisted. Sessions may be anonymous (development compatibility) or bound
+to a stable authenticated ``user_id`` for TASK 10 identity mode.
 """
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import hashlib
 import os
 import secrets
 import sqlite3
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 
@@ -23,6 +24,18 @@ DEFAULT_SESSION_DB = os.getenv(
 
 class SessionError(ValueError):
     """Raised when a bearer session is missing, malformed, unknown, or expired."""
+
+
+@dataclass(frozen=True)
+class SessionPrincipal:
+    """Server-side identity resolved from one opaque bearer credential."""
+
+    owner_id: str
+    user_id: str | None = None
+
+    @property
+    def conversation_owner_id(self) -> str:
+        return self.user_id or self.owner_id
 
 
 def session_token_hash(token: str) -> str:
@@ -80,11 +93,11 @@ def _configured_ttl() -> int:
 
 
 class SessionStore:
-    """Small SQLite-backed opaque-token store.
+    """SQLite-backed opaque-token store.
 
-    A fresh connection is used per operation. This keeps access safe across the
-    ASGI event loop and any worker threads without sharing sqlite connection
-    objects between execution contexts.
+    Existing anonymous session databases are migrated in place by adding the
+    nullable ``user_id`` column. A fresh connection is used per operation so the
+    store remains safe across the ASGI event loop and worker threads.
     """
 
     def __init__(self, path: str = DEFAULT_SESSION_DB, ttl_seconds: int | None = None):
@@ -101,6 +114,7 @@ class SessionStore:
                 CREATE TABLE IF NOT EXISTS sessions (
                   token_hash TEXT PRIMARY KEY,
                   owner_id TEXT NOT NULL UNIQUE,
+                  user_id TEXT,
                   created_at TEXT NOT NULL,
                   expires_at TEXT NOT NULL,
                   last_seen_at TEXT NOT NULL
@@ -108,30 +122,37 @@ class SessionStore:
                 CREATE INDEX IF NOT EXISTS sessions_expires_at ON sessions(expires_at);
                 """
             )
+            columns = {str(row["name"]) for row in db.execute("PRAGMA table_info(sessions)").fetchall()}
+            if "user_id" not in columns:
+                db.execute("ALTER TABLE sessions ADD COLUMN user_id TEXT")
+            db.execute("CREATE INDEX IF NOT EXISTS sessions_user_id ON sessions(user_id)")
 
     def _connect(self):
         connection = sqlite3.connect(self.path, timeout=5)
         connection.row_factory = sqlite3.Row
         return connection
 
-    def create(self) -> dict[str, str]:
+    def create(self, *, user_id: str | None = None) -> dict[str, str]:
         token, owner_id, created_at, expires_at = new_session_credentials(self.ttl_seconds)
         digest = session_token_hash(token)
+        normalized_user_id = str(user_id).strip() if user_id is not None else None
+        if normalized_user_id == "":
+            raise ValueError("user_id cannot be empty")
         with self._connect() as db:
             db.execute("DELETE FROM sessions WHERE expires_at <= ?", (datetime.now(timezone.utc).isoformat(),))
             db.execute(
-                "INSERT INTO sessions(token_hash,owner_id,created_at,expires_at,last_seen_at) VALUES(?,?,?,?,?)",
-                (digest, owner_id, created_at, expires_at, created_at),
+                "INSERT INTO sessions(token_hash,owner_id,user_id,created_at,expires_at,last_seen_at) VALUES(?,?,?,?,?,?)",
+                (digest, owner_id, normalized_user_id, created_at, expires_at, created_at),
             )
         return {"token": token, "expiresAt": expires_at}
 
-    def owner_for_authorization(self, authorization: str | None) -> str:
+    def principal_for_authorization(self, authorization: str | None) -> SessionPrincipal:
         token = parse_bearer_token(authorization)
         digest = session_token_hash(token)
         current = datetime.now(timezone.utc)
         with self._connect() as db:
             row = db.execute(
-                "SELECT owner_id,expires_at FROM sessions WHERE token_hash=?", (digest,)
+                "SELECT owner_id,user_id,expires_at FROM sessions WHERE token_hash=?", (digest,)
             ).fetchone()
             if row is None:
                 raise SessionError("Unknown session")
@@ -145,4 +166,22 @@ class SessionStore:
                 "UPDATE sessions SET last_seen_at=? WHERE token_hash=?",
                 (current.isoformat(), digest),
             )
-            return str(row["owner_id"])
+            return SessionPrincipal(
+                owner_id=str(row["owner_id"]),
+                user_id=str(row["user_id"]) if row["user_id"] is not None else None,
+            )
+
+    def owner_for_authorization(self, authorization: str | None) -> str:
+        """Compatibility helper returning the stable conversation owner."""
+        return self.principal_for_authorization(authorization).conversation_owner_id
+
+    def revoke(self, authorization: str | None) -> None:
+        token = parse_bearer_token(authorization)
+        digest = session_token_hash(token)
+        with self._connect() as db:
+            db.execute("DELETE FROM sessions WHERE token_hash=?", (digest,))
+
+    def revoke_user(self, user_id: str) -> int:
+        with self._connect() as db:
+            cursor = db.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+            return int(cursor.rowcount)

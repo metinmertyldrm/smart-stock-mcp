@@ -2,7 +2,7 @@
 """Production deployment contract + gateway smoke for Smart Stock.
 
 No LLM inference is performed. The script checks the rendered production Compose
-security contract and the browser-facing HTTP boundary.
+security contract, local identity boundary, and browser-facing HTTP boundary.
 """
 from __future__ import annotations
 
@@ -15,6 +15,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
+
+from validate_production_env import merged_environment
 
 
 class ProductionSmokeFailure(RuntimeError):
@@ -132,17 +134,33 @@ def audit_compose_config(config: dict[str, Any], *, allow_public_bind: bool = Fa
         raise ProductionSmokeFailure("llm-host telemetry application version must be set")
     if llm_env.get("LLM_MODEL") != llm_env.get("OLLAMA_MODEL"):
         raise ProductionSmokeFailure("llm-host telemetry model must match OLLAMA_MODEL")
+    if str(llm_env.get("LLM_AUTH_MODE") or "").casefold() != "local":
+        raise ProductionSmokeFailure("llm-host production identity mode must be local")
+    if not str(llm_env.get("LLM_IDENTITY_DB") or "").strip():
+        raise ProductionSmokeFailure("llm-host identity database path must be set")
+    if not str(llm_env.get("LLM_BOOTSTRAP_ADMIN_USERNAME") or "").strip():
+        raise ProductionSmokeFailure("llm-host bootstrap admin username must be set")
+    if not str(llm_env.get("LLM_BOOTSTRAP_ADMIN_PASSWORD") or "").strip():
+        raise ProductionSmokeFailure("llm-host bootstrap admin password must be set")
 
 
-def issue_session(llm_url: str, timeout: float) -> str:
-    status, body = request("POST", f"{llm_url}/api/session", timeout=timeout)
+def login(llm_url: str, username: str, password: str, timeout: float) -> str:
+    status, body = request(
+        "POST",
+        f"{llm_url}/api/auth/login",
+        payload={"username": username, "password": password},
+        timeout=timeout,
+    )
     token = body.get("token") if isinstance(body, dict) else None
-    if status != 201 or not isinstance(token, str) or len(token) < 32:
-        raise ProductionSmokeFailure(f"Session issuance failed: HTTP {status}")
+    user = body.get("user") if isinstance(body, dict) else None
+    if status != 200 or not isinstance(token, str) or len(token) < 32:
+        raise ProductionSmokeFailure(f"Admin login failed: HTTP {status}")
+    if not isinstance(user, dict) or user.get("role") != "ADMIN":
+        raise ProductionSmokeFailure("Bootstrap login did not resolve to ADMIN")
     return token
 
 
-def run_http_checks(web_url: str, timeout: float) -> None:
+def run_http_checks(web_url: str, timeout: float, *, username: str, password: str) -> None:
     base = web_url.rstrip("/")
     stock_url = f"{base}/stock"
     llm_url = f"{base}/llm"
@@ -152,40 +170,71 @@ def run_http_checks(web_url: str, timeout: float) -> None:
         raise ProductionSmokeFailure(f"Gateway health returned HTTP {status}: {body!r}")
     print("  [OK] Production gateway health")
 
-    status, products = request("GET", f"{stock_url}/api/products", timeout=timeout)
-    if status != 200 or not isinstance(products, list):
-        raise ProductionSmokeFailure(f"Read-only stock gateway returned HTTP {status}")
-    print(f"  [OK] Read-only stock gateway: {len(products)} products visible")
-
     status, readiness = request("GET", f"{llm_url}/api/ready", timeout=timeout)
     if status != 200 or not isinstance(readiness, dict) or readiness.get("status") != "ready":
         raise ProductionSmokeFailure(f"LLM readiness returned HTTP {status}: {readiness!r}")
     print("  [OK] LLM readiness through production gateway")
 
+    status, auth_config = request("GET", f"{llm_url}/api/auth/config", timeout=timeout)
+    if status != 200 or not isinstance(auth_config, dict) or auth_config.get("mode") != "local":
+        raise ProductionSmokeFailure(f"Production auth config returned HTTP {status}: {auth_config!r}")
+    print("  [OK] Production local identity mode")
+
+    status, _ = request("POST", f"{llm_url}/api/session", timeout=timeout)
+    if status != 404:
+        raise ProductionSmokeFailure(f"Anonymous production session returned HTTP {status}, expected 404")
+
     status, _ = request("GET", f"{llm_url}/api/metrics", timeout=timeout)
     if status != 401:
         raise ProductionSmokeFailure(f"Unauthenticated metrics returned HTTP {status}, expected 401")
 
-    token = issue_session(llm_url, timeout)
-    status, metrics = request(
+    status, _ = request("GET", f"{stock_url}/api/products", timeout=timeout)
+    if status != 401:
+        raise ProductionSmokeFailure(f"Unauthenticated stock read returned HTTP {status}, expected 401")
+    print("  [OK] Production stock reads require bearer authentication")
+
+    token = login(llm_url, username, password, timeout)
+    auth_header = {"Authorization": f"Bearer {token}"}
+    status, me = request("GET", f"{llm_url}/api/auth/me", headers=auth_header, timeout=timeout)
+    if status != 200 or not isinstance(me, dict) or (me.get("user") or {}).get("role") != "ADMIN":
+        raise ProductionSmokeFailure(f"Authenticated identity returned HTTP {status}")
+
+    status, products = request(
         "GET",
-        f"{llm_url}/api/metrics",
-        headers={"Authorization": f"Bearer {token}"},
+        f"{stock_url}/api/products",
+        headers=auth_header,
         timeout=timeout,
     )
+    if status != 200 or not isinstance(products, list):
+        raise ProductionSmokeFailure(f"Authenticated stock gateway returned HTTP {status}")
+    print(f"  [OK] Authenticated read-only stock gateway: {len(products)} products visible")
+
+    status, metrics = request("GET", f"{llm_url}/api/metrics", headers=auth_header, timeout=timeout)
     if status != 200 or not isinstance(metrics, dict) or "http" not in metrics:
-        raise ProductionSmokeFailure(f"Authenticated metrics returned HTTP {status}")
-    print("  [OK] Metrics remain behind Bearer authentication")
+        raise ProductionSmokeFailure(f"Admin metrics returned HTTP {status}")
+    print("  [OK] Metrics require authenticated ADMIN role")
 
     status, _ = request(
         "POST",
         f"{stock_url}/api/marketplace/orders",
         payload={"draftId": -1},
+        headers=auth_header,
         timeout=timeout,
     )
     if status != 405:
         raise ProductionSmokeFailure(f"Browser stock mutation returned HTTP {status}, expected 405")
     print("  [OK] Browser-facing stock mutations remain blocked")
+
+    status, _ = request("POST", f"{llm_url}/api/auth/logout", headers=auth_header, timeout=timeout)
+    if status != 204:
+        raise ProductionSmokeFailure(f"Logout returned HTTP {status}")
+    status, _ = request("GET", f"{llm_url}/api/metrics", headers=auth_header, timeout=timeout)
+    if status != 401:
+        raise ProductionSmokeFailure(f"Revoked session returned HTTP {status}, expected 401")
+    status, _ = request("GET", f"{stock_url}/api/products", headers=auth_header, timeout=timeout)
+    if status != 401:
+        raise ProductionSmokeFailure(f"Revoked stock session returned HTTP {status}, expected 401")
+    print("  [OK] Logout revokes LLM and stock gateway access")
 
 
 def run(
@@ -206,7 +255,12 @@ def run(
         print("  [OK] Production Compose exposes only the hardened gateway")
     if config_only:
         return
-    run_http_checks(web_url, timeout)
+    values = merged_environment(env_file)
+    username = values.get("LLM_BOOTSTRAP_ADMIN_USERNAME", "").strip()
+    password = values.get("LLM_BOOTSTRAP_ADMIN_PASSWORD", "")
+    if not username or not password:
+        raise ProductionSmokeFailure("Production identity credentials are required for HTTP smoke")
+    run_http_checks(web_url, timeout, username=username, password=password)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -234,7 +288,7 @@ def main(argv: list[str] | None = None) -> int:
             skip_compose_audit=args.skip_compose_audit,
             config_only=args.config_only,
         )
-    except ProductionSmokeFailure as exc:
+    except (ProductionSmokeFailure, OSError, ValueError) as exc:
         print(f"\n[FAIL] {exc}", file=sys.stderr)
         return 1
     print("\n[PASS] Smart Stock production deployment boundaries verified")

@@ -26,7 +26,6 @@ from plan_execution import (  # noqa: F401
     TRANSFORMS,
     TRANSFORM_INPUT_TYPES,
     detect_empty_input,
-    execute_plan,
     extract_result_text,
     filter_list_by_query,
     get_nested_value,
@@ -56,6 +55,40 @@ from plan_validation import (  # noqa: F401
     remove_json_comments,
     validate_plan_against_state,
 )
+from rbac import plan_authorization_violation
+
+
+async def execute_plan(plan, client, available_tool_names, state=None):
+    """Preflight the entire plan against RBAC before executing any tool.
+
+    Tool discovery and MCP dispatch still enforce the same role independently.
+    This earlier boundary keeps forbidden plans atomic: no preceding read step is
+    executed when a later write step exceeds the authenticated role.
+    """
+    violation = plan_authorization_violation(plan)
+    if violation is not None:
+        if isinstance(plan, dict):
+            plan["authorization"] = {
+                "status": "blocked",
+                "stage": "preflight",
+                "role": violation.role,
+                "stepId": violation.step_id,
+                "tool": violation.tool_name,
+            }
+        return {
+            "success": False,
+            "failed_step": violation.step_id,
+            "failed_tool": violation.tool_name,
+            "error": violation.technical_message,
+            "business_reason": violation.user_message,
+            "authorization_denied": True,
+            "preflight": True,
+            "retryable": False,
+            "results": {},
+            "durations_ms": {},
+        }
+    return await _execution.execute_plan(plan, client, available_tool_names, state)
+
 
 # Functions imported from agent_runtime keep that module's global namespace.
 # Rebind those globals to the extracted implementations so CLI, web and tests
@@ -85,7 +118,6 @@ _EXECUTION_EXPORTS = (
     "TRANSFORMS",
     "TRANSFORM_INPUT_TYPES",
     "detect_empty_input",
-    "execute_plan",
     "extract_result_text",
     "filter_list_by_query",
     "get_nested_value",
@@ -109,6 +141,9 @@ _EXECUTION_EXPORTS = (
 )
 for _name in _EXECUTION_EXPORTS:
     setattr(_runtime, _name, getattr(_execution, _name))
+
+# Keep runtime callers on the same RBAC-aware execution boundary as web_api.
+_runtime.execute_plan = execute_plan
 
 
 if __name__ == "__main__":

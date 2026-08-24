@@ -1,138 +1,174 @@
 # Security model
 
-Smart Stock uses several independent safety layers. They solve different problems and should not be treated as interchangeable.
+Smart Stock uses several independent safety layers. They solve different problems and must not be treated as interchangeable.
 
 ## 1. AI write-safety boundary
 
-The LLM proposes execution plans, but it is not the authority for write operations. Host-side validation still enforces the existing workflow:
+The LLM proposes execution plans, but it is not the authority for write operations. Host-side validation enforces the business workflow:
 
-- read-only / planning requests cannot execute write tools,
-- a purchase draft must exist before an order can be confirmed,
-- order confirmation is separate from draft creation,
-- incoming orders are listed before receiving,
+- read-only requests cannot execute write tools;
+- a purchase draft must exist before an order can be confirmed;
+- order confirmation is separate from draft creation;
+- incoming orders are listed before receiving;
 - receiving inventory requires a later explicit confirmation.
 
-TASK 07 does not move these decisions into the model. It adds HTTP and deployment boundaries around them.
+TASK 10 adds user identity and RBAC around this existing boundary rather than moving authorization into the model.
 
-## 2. Anonymous bearer sessions
+## 2. Identity modes and bearer sessions
 
 The deployable LLM API entry point is `secure_api:app`.
 
-`POST /api/session` creates an anonymous session with:
+Two identity modes exist:
 
-- a cryptographically random opaque bearer token,
-- a separate random server-side owner identifier,
-- a bounded expiration time.
+- `anonymous`: development/test compatibility. `POST /api/session` creates an opaque anonymous bearer session.
+- `local`: production user identity. `POST /api/auth/login` authenticates a stable user account and creates an opaque bearer session linked to that user ID.
 
-Only the SHA-256 digest of the bearer token is stored in the session SQLite database. The plaintext bearer credential is returned once to the client and is not persisted by the server.
+Production requires `LLM_AUTH_MODE=local`; anonymous session issuance returns `404` there.
 
-The intentionally public LLM endpoints are:
+Only the SHA-256 digest of a bearer token is stored server-side. The plaintext token is returned to the browser and is never persisted by the session store. The user's role is not trusted from the token or browser. In local mode the current role is loaded from the identity database on each protected request.
 
-- `GET /api/health` for process liveness,
-- `GET /api/ready` for side-effect-free readiness checks,
-- `POST /api/session` for anonymous session issuance.
+The intentionally public LLM endpoints are limited to coarse liveness/readiness and identity bootstrap entry points such as:
 
-All other LLM API routes, including `GET /api/metrics`, require:
+- `GET /api/health`;
+- `GET /api/ready`;
+- `GET /api/auth/config`;
+- `POST /api/auth/login` in local mode;
+- `POST /api/session` only in anonymous mode.
+
+Protected routes require:
 
 ```text
 Authorization: Bearer <opaque-token>
 ```
 
-Readiness exposes only coarse local component state and MCP server/tool counts; it does not expose credentials, conversation content, request bodies, or tool results. Operational metrics stay behind the Bearer boundary because they reveal request-volume and execution characteristics.
+Readiness exposes only coarse local component state and MCP server/tool counts. It does not expose credentials, conversation content, request bodies, or tool results.
 
-A caller-supplied `X-Client-Id` is not trusted at the public boundary. `secure_api` strips it and injects the owner identifier resolved from the bearer session before handing the request to the internal `web_api` implementation.
+The default session lifetime is bounded and configurable with `LLM_SESSION_TTL_SECONDS`.
 
-The default session lifetime is 30 days and can be overridden with `LLM_SESSION_TTL_SECONDS`. Values are bounded between 5 minutes and 365 days.
+## 3. Local user credentials
 
-### Important limitation
+Local identities use stable UUIDs. Passwords are never stored directly. Each password is processed with stdlib `scrypt` and a per-user random salt.
 
-These sessions provide anonymous client isolation. They are **not** user accounts, organization membership, roles, MFA, or RBAC.
+Authentication failures do not distinguish unknown usernames from incorrect passwords. Unknown-user attempts perform a dummy `scrypt` calculation to reduce obvious timing differences.
 
-The current web client stores the opaque bearer token in browser `localStorage`. That is suitable for this local/demo topology, but a successful same-origin XSS vulnerability could read the token. A production internet-facing deployment should use a hardened identity/session design appropriate to its threat model, usually behind TLS and with stronger browser credential handling.
+Disabling a user invalidates active sessions. The final enabled `ADMIN` cannot be disabled or demoted, preventing accidental administrative lockout.
 
-## 3. Docker web gateway
+The browser currently stores the opaque bearer token in `localStorage`. A same-origin XSS vulnerability could therefore read it. The production CSP reduces the attack surface, but `HttpOnly` cookie migration, MFA, enterprise SSO/OIDC and distributed session storage remain future hardening work.
 
-The default Docker topology has one browser-facing application entry point:
+## 4. Roles and capabilities
 
-```text
-http://localhost:5173
-```
+The local role model is:
 
-The published web port is bound to `127.0.0.1` by default.
+| Role | Server capabilities |
+| --- | --- |
+| `VIEWER` | read |
+| `OPERATOR` | read + purchase draft creation |
+| `MANAGER` | operator capabilities + operational confirmation |
+| `ADMIN` | manager capabilities + metrics + user management |
 
-Nginx exposes two application proxy paths:
+Role information shown by the UI is informational. The server is authoritative.
 
-- `/stock/...` proxies to the stock service but accepts only `GET` and `HEAD`,
-- `/llm/...` proxies to the secured LLM host and preserves bearer authentication.
+A caller-supplied `X-Client-Id`, role, or capability header is removed at the public boundary. The server injects identity metadata derived from the authenticated session.
 
-The normal `postgres`, `stock-service` and `llm-host` containers do not publish host ports. They remain reachable to one another over the Docker-internal network. Keeping the normal PostgreSQL service internal also avoids conflicts with an independently installed host PostgreSQL instance and removes an unnecessary host-facing database socket.
+## 5. Layered RBAC enforcement
 
-Ollama remains published for local development because the host-side smoke verifier checks the configured model directly; its port is bound to `127.0.0.1` rather than all interfaces.
+TASK 10 deliberately checks write authorization more than once:
 
-Acceptance PostgreSQL and the acceptance Spring service remain host-accessible because the acceptance runner/reset tooling is host-side. Those ports are also loopback-only and operate on the isolated acceptance database.
+1. request middleware resolves the authenticated user and role;
+2. MCP tool discovery hides write tools the role cannot use;
+3. the whole execution plan is checked before the first tool runs;
+4. MCP dispatch checks authorization again immediately before each write-capable tool call;
+5. confirmation routes independently require the `confirm` capability;
+6. metrics and user-management routes require `ADMIN` capabilities.
 
-## 4. Browser mutation policy
+Whole-plan preflight is atomic. If a plan contains an allowed read step followed by a forbidden write, the read step is not executed either. This prevents partial execution of a plan that can never be authorized.
 
-The web dashboard's stock data path is intentionally read-only. The previous direct browser `POST /api/marketplace/orders` action from the drafts screen has been removed.
+A blocked plan records bounded audit metadata such as role, blocked step and blocked tool. Passwords and bearer tokens are not copied into chat telemetry.
 
-A draft may be inspected in the Drafts page, but purchase finalization must go through the AI Operations confirmation flow so the same host-side state and confirmation rules are authoritative for every order.
+## 6. Conversation isolation
 
-Do not re-introduce browser-side stock/order mutations through the `/stock` proxy. If a new mutation is needed, route it through a server-side authorization/confirmation boundary first.
+Conversation ownership uses the stable authenticated user ID in local mode. Fetch, list and delete operations filter by that owner. A different user receives the same not-found behavior rather than another user's conversation.
 
-## 5. Security headers
+Legacy anonymous development sessions keep their random owner IDs and remain isolated from one another.
 
-The default Nginx gateway sets conservative browser headers including:
+## 7. Docker and production gateway
 
-- `X-Content-Type-Options: nosniff`,
-- `X-Frame-Options: DENY`,
-- `Referrer-Policy: no-referrer`,
-- a restrictive camera/microphone/geolocation `Permissions-Policy`.
+The default development topology uses the browser-facing web gateway, typically on loopback. Production publishes only the hardened web gateway; PostgreSQL, stock-service, llm-host and Ollama stay on Docker-internal networks.
 
-Request bodies are limited to 1 MiB at the gateway. Session-creation and authentication-error responses use `Cache-Control: no-store`.
+Production `/stock/...` behavior is stricter than development:
 
-## 6. Verification
+- only `GET` and `HEAD` are accepted;
+- nginx performs an internal `auth_request` against `llm-host /api/auth/me`;
+- unauthenticated requests return `401`;
+- after successful authorization, the bearer token is explicitly removed before proxying to stock-service;
+- browser stock mutations remain blocked with `405`.
 
-After rebuilding the secured stack, run the deterministic security smoke:
+`/llm/...` proxies to the secured LLM host and preserves bearer authentication.
+
+The normal PostgreSQL, stock-service, LLM host and Ollama production services do not publish host ports.
+
+## 8. Browser mutation policy
+
+The dashboard's stock data path is intentionally read-only. Purchase finalization must go through the AI operation/confirmation flow so host-side state, business validation and RBAC remain authoritative.
+
+Do not re-introduce browser-side stock/order mutation endpoints through `/stock`. New mutations must pass a server-side authorization and confirmation boundary.
+
+## 9. Security headers
+
+The production Nginx gateway sets conservative browser headers including:
+
+- `X-Content-Type-Options: nosniff`;
+- `X-Frame-Options: DENY`;
+- `Referrer-Policy: no-referrer`;
+- a restrictive camera/microphone/geolocation `Permissions-Policy`;
+- a same-origin-oriented Content Security Policy.
+
+Request bodies are bounded at the gateway. Authentication/session responses use no-store caching where appropriate.
+
+## 10. Verification
+
+Development security smoke remains available:
 
 ```bash
 python scripts/security_smoke.py
 ```
 
-It verifies that:
-
-- protected LLM routes reject missing bearer credentials,
-- a spoofed `X-Client-Id` cannot impersonate another owner,
-- two independent bearer sessions cannot read each other's conversations,
-- browser-facing stock mutation requests are rejected by the gateway before reaching the backend.
-
-Then run the normal full-stack smoke, optionally including the real read-only LLM + MCP path:
+The production contract and runtime boundary are verified with:
 
 ```bash
-python scripts/smoke_stack.py --chat
+python scripts/validate_production_env.py --env-file .env.production
+python scripts/production_smoke.py --env-file .env.production --config-only
+python scripts/production_smoke.py --env-file .env.production --web-url http://127.0.0.1:8080
 ```
 
-The normal smoke reaches stock and LLM APIs through the same `/stock` and `/llm` gateway paths used by the Docker web application.
+The production smoke performs no LLM inference. It verifies local identity mode, admin login, authenticated `/me`, ADMIN metrics, authenticated stock reads, browser mutation blocking and session revocation on logout.
 
-TASK 08 adds a separate deterministic observability smoke for request IDs, readiness and authenticated metrics:
+CI additionally starts the production nginx image with a real local-identity LLM host and a mock stock backend. The mock backend deliberately fails if it receives the browser Authorization header, proving that the gateway validates the bearer credential without leaking it to stock-service.
 
-```bash
-python scripts/observability_smoke.py
-```
+For observability-specific checks, see [`observability.md`](observability.md).
 
-See [`observability.md`](observability.md) for the operational interpretation of those signals.
+## 11. Manual development warning
 
-## 7. Manual development warning
+Starting stock-service directly on a host port bypasses the production gateway's authentication and method restrictions. Do not bind it to an untrusted interface.
 
-Starting `stock-service` directly on host port 8081 is a development topology and does not receive the Docker gateway's method restriction. Do not bind that service to an untrusted interface or expose it to the internet.
-
-Likewise, run the browser-facing LLM API with:
+Likewise, use the secured entry point for browser-facing LLM traffic:
 
 ```bash
 uvicorn secure_api:app --host 127.0.0.1 --port 8000
 ```
 
-`web_api:app` remains available as the internal orchestration implementation for tests and trusted development code. It should not be treated as the public authenticated entry point.
+`web_api:app` remains an internal orchestration implementation for tests and trusted code. It is not the public authentication boundary.
 
-## Non-goals for TASK 07
+## 12. Deferred security work
 
-TASK 07 does not attempt to provide a complete production identity platform, TLS termination, per-user roles, enterprise SSO, secret management infrastructure, WAF/rate-limiting infrastructure, or a formal security audit. Those require deployment-specific decisions beyond this repository's local/demo topology.
+TASK 10 is a local identity/RBAC implementation, not a complete enterprise identity platform. Deferred work includes:
+
+- TLS termination infrastructure;
+- MFA;
+- SSO/OIDC and SCIM;
+- password recovery/email verification;
+- centralized/distributed session storage;
+- rate limiting / WAF policy;
+- `HttpOnly` cookie migration;
+- organization/tenant federation;
+- formal external security audit.

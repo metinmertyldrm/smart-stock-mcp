@@ -42,6 +42,47 @@ class SessionStoreTest(unittest.TestCase):
         self.assertEqual(owner_a, owner_b)
         self.assertTrue(session["expiresAt"])
 
+    def test_user_bound_session_resolves_to_stable_user_owner(self):
+        session_a = self.store.create(user_id="user-123")
+        session_b = self.store.create(user_id="user-123")
+        principal_a = self.store.principal_for_authorization(f"Bearer {session_a['token']}")
+        principal_b = self.store.principal_for_authorization(f"Bearer {session_b['token']}")
+
+        self.assertNotEqual(principal_a.owner_id, principal_b.owner_id)
+        self.assertEqual(principal_a.user_id, "user-123")
+        self.assertEqual(principal_b.user_id, "user-123")
+        self.assertEqual(principal_a.conversation_owner_id, "user-123")
+        self.assertEqual(self.store.owner_for_authorization(f"Bearer {session_b['token']}"), "user-123")
+
+    def test_revoke_user_invalidates_all_user_sessions_only(self):
+        user_a = self.store.create(user_id="user-a")
+        user_b = self.store.create(user_id="user-a")
+        anonymous = self.store.create()
+        self.assertEqual(self.store.revoke_user("user-a"), 2)
+        for session in (user_a, user_b):
+            with self.assertRaisesRegex(SessionError, "Unknown session"):
+                self.store.owner_for_authorization(f"Bearer {session['token']}")
+        self.assertTrue(self.store.owner_for_authorization(f"Bearer {anonymous['token']}"))
+
+    def test_legacy_session_schema_is_migrated_in_place(self):
+        legacy_path = os.path.join(self.directory.name, "legacy.db")
+        with sqlite3.connect(legacy_path) as db:
+            db.executescript(
+                """
+                CREATE TABLE sessions (
+                  token_hash TEXT PRIMARY KEY,
+                  owner_id TEXT NOT NULL UNIQUE,
+                  created_at TEXT NOT NULL,
+                  expires_at TEXT NOT NULL,
+                  last_seen_at TEXT NOT NULL
+                );
+                """
+            )
+        SessionStore(legacy_path, ttl_seconds=3600)
+        with sqlite3.connect(legacy_path) as db:
+            columns = {row[1] for row in db.execute("PRAGMA table_info(sessions)").fetchall()}
+        self.assertIn("user_id", columns)
+
     def test_plaintext_token_is_never_persisted(self):
         session = self.store.create()
         token = session["token"]

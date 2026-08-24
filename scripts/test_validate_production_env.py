@@ -10,6 +10,9 @@ GOOD_ENV = {
     "DB_USERNAME": "smartstock_app",
     "DB_PASSWORD": "a-very-long-random-production-secret-42",
     "DB_NAME": "smart_stock",
+    "LLM_AUTH_MODE": "local",
+    "LLM_BOOTSTRAP_ADMIN_USERNAME": "smartstock-admin",
+    "LLM_BOOTSTRAP_ADMIN_PASSWORD": "another-very-long-admin-secret-84",
     "PUBLIC_ORIGIN": "https://stock.example.com",
     "POSTGRES_IMAGE": "postgres:17@sha256:" + POSTGRES_TEST_DIGEST,
     "OLLAMA_IMAGE": "ollama/ollama:0.11.4@sha256:" + OLLAMA_TEST_DIGEST,
@@ -29,6 +32,29 @@ class ProductionEnvValidationTest(unittest.TestCase):
         values["DB_PASSWORD"] = "postgres"
         errors = validate(values)
         self.assertTrue(any("DB_PASSWORD" in error for error in errors))
+
+    def test_production_requires_local_identity_mode(self):
+        values = dict(GOOD_ENV)
+        values["LLM_AUTH_MODE"] = "anonymous"
+        errors = validate(values)
+        self.assertTrue(any("LLM_AUTH_MODE" in error and "local" in error for error in errors))
+
+    def test_bootstrap_admin_password_is_strong_and_separate(self):
+        values = dict(GOOD_ENV)
+        values["LLM_BOOTSTRAP_ADMIN_PASSWORD"] = "short"
+        errors = validate(values)
+        self.assertTrue(any("LLM_BOOTSTRAP_ADMIN_PASSWORD" in error for error in errors))
+
+        values = dict(GOOD_ENV)
+        values["LLM_BOOTSTRAP_ADMIN_PASSWORD"] = values["DB_PASSWORD"]
+        errors = validate(values)
+        self.assertTrue(any("DB_PASSWORD" in error and "BOOTSTRAP" in error for error in errors))
+
+    def test_bootstrap_admin_username_must_match_local_identity_rules(self):
+        values = dict(GOOD_ENV)
+        values["LLM_BOOTSTRAP_ADMIN_USERNAME"] = "Bad User Name"
+        errors = validate(values)
+        self.assertTrue(any("LLM_BOOTSTRAP_ADMIN_USERNAME" in error for error in errors))
 
     def test_http_origin_is_rejected(self):
         values = dict(GOOD_ENV)

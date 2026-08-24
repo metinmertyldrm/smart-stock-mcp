@@ -12,7 +12,7 @@ The repository contains five main components:
 - `llm-host`: Python orchestrator using Qwen through Ollama, execution planning, MCP calls, permission/confirmation handling, conversation persistence, FastAPI endpoints and acceptance tooling.
 - `web-ui`: React + TypeScript + Vite operations dashboard and AI operations center.
 
-The LLM proposes execution plans, but business rules and write-safety controls remain enforced outside the model. Purchase finalization and inventory receiving flows preserve explicit confirmation requirements.
+The LLM proposes execution plans, but business rules, user authorization and write-safety controls remain enforced outside the model. Purchase finalization and inventory receiving flows preserve explicit confirmation requirements.
 
 ## Key features
 
@@ -23,19 +23,22 @@ The LLM proposes execution plans, but business rules and write-safety controls r
 - Cheapest, fastest, highest-rated and balanced procurement strategies.
 - Purchase draft and marketplace order workflows.
 - Incoming-order tracking and safe receive flow.
-- Persistent AI conversations.
+- Persistent AI conversations with owner isolation.
 - Observable execution plan, MCP trace, telemetry and user-facing decision journal.
 - Isolated acceptance database tooling for repeatable write scenarios.
 - React/Vite operations dashboard.
-- Server-issued anonymous bearer sessions for the browser-facing LLM API.
-- Read-only browser stock gateway so mutation endpoints remain on the internal Docker network.
+- Opaque server-issued bearer sessions; anonymous compatibility in development and stable local user identity in production.
+- Role-based authorization with `VIEWER`, `OPERATOR`, `MANAGER` and `ADMIN` capabilities.
+- Whole-plan RBAC preflight plus independent MCP dispatch authorization.
+- Production login/logout/me and ADMIN user management.
+- Authenticated, read-only production stock gateway; browser bearer tokens are not forwarded to stock-service.
 - Separate fail-closed production Compose topology with non-root/read-only application containers.
 - Flyway-owned production schema migrations with Hibernate validation.
 - Tag-gated release workflow that publishes versioned application images and immutable digests.
 
 ## Quick start with Docker Compose
 
-Docker Compose is the recommended way to run the complete local stack. It starts PostgreSQL, the Spring service, Ollama, the LLM host with both MCP subprocesses, and the production-built web dashboard.
+Docker Compose is the recommended way to run the complete local development stack. It starts PostgreSQL, the Spring service, Ollama, the LLM host with both MCP subprocesses, and the web dashboard.
 
 ### Requirements
 
@@ -49,7 +52,7 @@ git clone https://github.com/metinmertyldrm/smart-stock-mcp.git
 cd smart-stock-mcp
 ```
 
-Optional: copy the environment template if you want to override local ports, the local database password, the Ollama model, or the anonymous session lifetime.
+Optional: copy the environment template if you want to override local ports, the local database password, the Ollama model, or the anonymous development-session lifetime.
 
 ```bash
 cp .env.example .env
@@ -73,7 +76,7 @@ Default host-facing endpoints:
 | Ollama, loopback-only | `http://localhost:11434` |
 | PostgreSQL, loopback-only | `localhost:5432` |
 
-The normal Docker `stock-service` and `llm-host` containers do **not** publish host ports. Browser traffic enters through the web gateway: `/stock` permits only `GET`/`HEAD`, while `/llm` reaches the bearer-authenticated LLM API. This keeps stock mutations and MCP-facing service calls on the Docker-internal network.
+The normal Docker `stock-service` and `llm-host` containers do **not** publish host ports. Browser traffic enters through the web gateway. The default development topology keeps anonymous bearer-session compatibility for LLM conversation isolation. Production uses a separate, stricter identity contract described below.
 
 Run in the background:
 
@@ -113,21 +116,29 @@ Stop the stack while keeping data:
 docker compose down
 ```
 
-Remove the stack and its local Docker volumes only when you intentionally want to delete local database, conversation, session and Ollama model data:
+Remove the development stack and its local Docker volumes only when you intentionally want to delete local database, conversation, session and Ollama model data:
 
 ```bash
 docker compose down -v
 ```
 
-The default `DB_PASSWORD=postgres` in Compose is strictly a local-development convenience. Override it in `.env` for any shared environment. This Compose stack is a development/demo topology, not a production deployment configuration.
+The default `DB_PASSWORD=postgres` in Compose is strictly a local-development convenience. Override it in `.env` for any shared environment. This Compose stack is a development/demo topology, not the production deployment configuration.
 
-See [`docs/security.md`](docs/security.md) for the trust boundaries, bearer-session limitations and deployment warnings.
+See [`docs/security.md`](docs/security.md) for the trust boundaries, identity modes and deployment warnings.
 
 ## Production deployment
 
 Production uses the separate `docker-compose.prod.yml` contract. Do not convert the development Compose file into a public deployment by simply changing its port bindings.
 
-Start by copying `.env.production.example`, replacing the weak/placeholder values and resolving real PostgreSQL/Ollama repository digests. Then run the fail-closed checks before startup:
+Copy `.env.production.example`, replace every weak/placeholder value, resolve real PostgreSQL/Ollama repository digests, and configure the first administrator:
+
+```text
+LLM_AUTH_MODE=local
+LLM_BOOTSTRAP_ADMIN_USERNAME=<admin-username>
+LLM_BOOTSTRAP_ADMIN_PASSWORD=<strong-random-password>
+```
+
+Then run the fail-closed checks before startup:
 
 ```bash
 python scripts/validate_production_env.py --env-file .env.production
@@ -136,17 +147,34 @@ python scripts/production_smoke.py --env-file .env.production --config-only
 
 The production topology keeps PostgreSQL, stock-service, llm-host and Ollama internal. Only the application gateway is host-facing and it binds to loopback by default so a trusted HTTPS reverse proxy can sit in front of it.
 
+Production identity behavior:
+
+- anonymous session issuance is disabled;
+- the first local `ADMIN` is created only when the identity store is empty;
+- login sessions are linked to stable user IDs;
+- current roles are re-read server-side on protected requests;
+- unauthenticated `/stock` reads return `401`;
+- nginx validates the bearer session through `/api/auth/me` and strips the bearer before forwarding to stock-service;
+- metrics and user management are `ADMIN`-only;
+- write-capable AI plans are limited by role at tool discovery, whole-plan preflight and MCP dispatch boundaries.
+
 The production Spring profile uses Flyway versioned migrations and Hibernate `ddl-auto=validate`; development seed data is disabled. Hardened application containers run non-root with read-only root filesystems, dropped Linux capabilities and `no-new-privileges`.
 
-After startup, run:
+Start the stack:
 
 ```bash
-python scripts/production_smoke.py --env-file .env.production
+docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
 ```
 
-Production infrastructure hardening does **not** replace user identity/RBAC. The current bearer sessions are anonymous isolation credentials. Until a real identity layer exists, use a trusted audience or upstream authentication/access control before exposing the service broadly.
+After startup, run the no-inference runtime smoke using the configured web port:
 
-See [`docs/production.md`](docs/production.md) for TLS, migrations, backup/restore, upgrades and rollback. See [`docs/release.md`](docs/release.md) for the guarded `vX.Y.Z` release flow and application image manifests.
+```bash
+python scripts/production_smoke.py --env-file .env.production --web-url http://127.0.0.1:8080
+```
+
+It verifies local identity mode, login, `/me`, authenticated stock reads, ADMIN metrics, mutation blocking and session revocation on logout without asking Ollama to generate a response.
+
+See [`docs/production.md`](docs/production.md) for identity bootstrap, TLS, migrations, backup/restore, upgrades and rollback. See [`docs/task10-identity-rbac.md`](docs/task10-identity-rbac.md) for the role/enforcement model. See [`docs/release.md`](docs/release.md) for the guarded `vX.Y.Z` release flow and application image manifests.
 
 ## Docker acceptance profile
 
@@ -163,7 +191,7 @@ Defaults:
 
 These acceptance ports are bound to loopback. This keeps the acceptance database separate from the normal `smart_stock` database. The existing acceptance reset script still refuses database names that do not end in `_acceptance`.
 
-For state-changing acceptance runs, execute the runner from the host with the acceptance endpoints and the trusted reset command documented below. The Compose profile only supplies the isolated database/service topology; it does not weaken or bypass the runner's reset requirement.
+For state-changing acceptance runs, execute the runner from the host with the acceptance endpoints and the trusted reset command. The Compose profile supplies the isolated database/service topology; it does not weaken or bypass the runner's reset requirement.
 
 ## Manual development requirements
 
@@ -263,6 +291,8 @@ $env:STOCK_SERVICE_URL = "http://localhost:8081"
 uvicorn secure_api:app --host 127.0.0.1 --port 8000
 ```
 
+Without `LLM_AUTH_MODE=local`, manual development uses anonymous session compatibility. To exercise local identity manually, set local auth mode plus bootstrap credentials and use a disposable identity/session database.
+
 The internal `web_api:app` implementation remains available to trusted tests and development code, but it is not the authenticated public entry point.
 
 The CLI entry point remains available:
@@ -356,36 +386,59 @@ python acceptance_runner.py --only max_delivery_days --only pending_orders_listi
 - `create_purchase_draft`
 - `place_order`
 
+The authenticated role limits which write-capable tools are advertised to the model and which can actually be dispatched.
+
 ## Main REST surfaces
 
-The Spring Boot service provides inventory, incoming-order and marketplace REST APIs under `/api`. In the normal Docker topology the browser sees them only through the read-only `/stock` gateway; MCP processes reach the full service on the internal Docker network.
+The Spring Boot service provides inventory, incoming-order and marketplace REST APIs under `/api`. In the Docker topology the browser sees them through the read-only `/stock` gateway; MCP processes reach the full service on the internal Docker network. Production additionally requires bearer authentication for `/stock` reads.
 
 The secured LLM host provides endpoints including:
 
 - `GET /api/health` (public liveness),
 - `GET /api/ready` (public side-effect-free readiness),
-- `POST /api/session` (public session issuance),
-- `GET /api/metrics` (Bearer session required),
-- `POST /api/chat` (Bearer session required),
-- conversation listing/detail/deletion (Bearer session required),
-- conversation confirmation endpoints (Bearer session required).
+- `GET /api/auth/config` (public identity-mode discovery),
+- `POST /api/session` (anonymous development mode only),
+- `POST /api/auth/login` (local identity mode),
+- `GET /api/auth/me` and `POST /api/auth/logout` (authenticated local sessions),
+- `GET /api/metrics` (authenticated, `ADMIN`-only in local mode),
+- `/api/admin/users...` (authenticated `ADMIN` user management),
+- `POST /api/chat` (authenticated bearer session),
+- conversation listing/detail/deletion (authenticated bearer session),
+- conversation confirmation endpoints (authenticated bearer session plus `confirm` capability in local mode).
 
 The dashboard consumes both services through the same-origin Nginx gateway.
 
 ## Web smoke checklist
 
-After starting the complete stack:
+### Development topology
+
+After starting the default Compose stack:
 
 1. Open `http://localhost:5173` and verify dashboard KPIs load.
 2. Verify the inventory table and product filters.
 3. Open marketplace, draft and incoming-order views.
-4. Verify AI chat communicates through the `/llm` gateway and creates an anonymous bearer session.
+4. Verify AI chat communicates through the `/llm` gateway and creates an anonymous development bearer session.
 5. Ask: `Bekleyen siparişleri kontrol et ve teslim edilen ürünleri stoğa ekle.`
 6. Verify the first turn lists receivable orders without changing stock.
 7. Verify the trace includes listing tools but no receive tool before approval.
 8. Send `Onaylıyorum.` and verify only eligible delivered orders are received.
 9. Verify the Drafts page does not offer a direct browser-side order mutation and routes finalization through AI Operations.
 10. Exercise delivery, rating and budget constraints and inspect the observable trace arguments.
+
+### Production topology
+
+After production startup:
+
+1. The browser should show a login screen before stock/application data loads.
+2. Invalid or missing bearer credentials must not read `/stock` data.
+3. Log in as a named account and verify the current role is visible.
+4. `VIEWER` must remain read-only.
+5. `OPERATOR` may create a purchase draft but cannot confirm/place an order.
+6. `MANAGER`/`ADMIN` may perform confirmation flows permitted by the existing business state.
+7. Only `ADMIN` should see/use user management and metrics.
+8. Logout must return the browser to the login flow and invalidate the old token.
+
+Do not create artificial production business data merely to force a write-role test. Deterministic unit/CI coverage verifies the RBAC matrix without modifying production inventory.
 
 ## Quality checks
 
@@ -415,6 +468,12 @@ python scripts/observability_smoke.py
 ```bash
 python scripts/validate_production_env.py --env-file .env.production
 python scripts/production_smoke.py --env-file .env.production --config-only
+```
+
+### Production runtime smoke
+
+```bash
+python scripts/production_smoke.py --env-file .env.production --web-url http://127.0.0.1:8080
 ```
 
 ### Frontend
@@ -451,11 +510,12 @@ git status
 ## Environment and secrets
 
 - Local `.env` and `.env.production` files are ignored; only documented example templates are tracked.
-- Runtime SQLite conversation and anonymous-session databases are ignored.
+- Runtime SQLite conversation, session and identity databases are ignored.
 - Generated acceptance reports are ignored.
 - `node_modules`, Vite output, coverage and common Python caches are ignored.
 - Server-side secrets must never be exposed through `VITE_*` variables.
-- Opaque browser bearer tokens are credentials even though they represent anonymous sessions.
+- Opaque browser bearer tokens are credentials whether they represent anonymous development sessions or authenticated production users.
+- Bootstrap administrator and database passwords must never be committed.
 - Development Compose defaults are intended for local development only.
 - Production deployment rejects weak credentials and mutable external image references before startup.
 
@@ -463,4 +523,4 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) for contribution and verification expec
 
 ## Planned improvements
 
-Potential future work includes real user identity/RBAC, marketplace provider integrations, demand forecasting, notifications, mobile clients and persistent/distributed observability export.
+Potential future work includes enterprise SSO/OIDC, MFA, password recovery, `HttpOnly` cookie migration, distributed session/identity storage, marketplace provider integrations, demand forecasting, notifications, mobile clients and persistent/distributed observability export.

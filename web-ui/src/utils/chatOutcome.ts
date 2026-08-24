@@ -6,8 +6,27 @@ const BUSINESS_NOOP_PHRASES=[
   'uygun kalem bulunamadı',
 ];
 
+export type AuthorizationBlock={
+  status?:string;
+  stage?:string;
+  role?:string;
+  stepId?:string;
+  tool?:string;
+};
+
+export function getAuthorizationBlock(response?:ChatResponse):AuthorizationBlock|undefined{
+  if(!response)return undefined;
+  const authorization=(response.plan as ChatResponse['plan']&{authorization?:AuthorizationBlock}).authorization;
+  return authorization?.status==='blocked'?authorization:undefined;
+}
+
+export function isAuthorizationBlocked(response?:ChatResponse){
+  return Boolean(getAuthorizationBlock(response));
+}
+
 export function isBusinessNoOp(response?:ChatResponse){
   if(!response||response.succeeded!==false)return false;
+  if(isAuthorizationBlocked(response))return false;
   if(response.pendingDraftId||(response.pendingReceiveIds?.length||0)>0)return false;
   if((response.explanation?.changes?.length||0)>0)return false;
   if(response.trace?.some(step=>step.tool==='place_order'&&step.status==='success'))return false;
