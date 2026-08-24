@@ -277,7 +277,8 @@ NON-NEGOTIABLE SAFETY / ROUTING RULES:
 7. Quantity questions such as "kaç tane almalıyım/sipariş etmeliyim" use REASON plus replenishment retrieval. Do not create offers/plans unless explicitly requested.
 8. `kritik`, `critical`, `azalan`, `low stock`, `stokta olmayan`, `out of stock` are stock states, NOT categories. Category filters belong to stock/replenishment tools.
 9. Seller/marketplace filters (min_rating, max_delivery_days, max_unit_price, max_shipping_cost, max_total_budget) belong inside marketplace `filters`. Total budget maps to filters.max_total_budget, never max_unit_price. Never pass category/category_name to marketplace planning tools.
-10. For low/critical replenishment data use calculate_replenishment/get_stock_replenishment_needed. For out-of-stock plan: list_out_of_stock -> create_procurement_plan with out_of_stock_products_to_items. For low-stock plan: list_low_stock -> create_procurement_plan with low_stock_products_to_items.
+10. For "toplam bütçe ... eksik ürünleri tamamla", NEVER invent a product_id. Use calculate_replenishment with empty arguments, then create_procurement_plan with all step_1.replenishments transformed by replenishments_to_items and filters.max_total_budget set to the requested total TL budget.
+11. For low/critical replenishment data use calculate_replenishment/get_stock_replenishment_needed. For out-of-stock plan: list_out_of_stock -> create_procurement_plan with out_of_stock_products_to_items. For low-stock plan: list_low_stock -> create_procurement_plan with low_stock_products_to_items.
 11. Current-plan references use {{"$from":"step_id.path"}}. Conversation context uses {{"$from_context":"name.path"}}. Never put last_reference/last_plan/etc. inside `$from`.
 12. Valid context roots: last_plan,last_cheapest_plan,last_fastest_plan,last_product,last_replenishment,last_reference,pending_draft_id,pending_receive_ids. Only declare context_sources that actually exist in CONTEXT.
 13. calculate_replenishment/get_stock_replenishment_needed results expose `replenishments`; product listing/search tools expose `products`.
@@ -301,6 +302,7 @@ KEY EXAMPLES:
 6. "kanka sadece sayı ver" as a formatting follow-up -> goal=CHAT, steps=[], answer in Turkish from history.
 7. "Siparişi onaylıyorum" with PENDING_DRAFT_ID -> goal=ORDER with the exact two-step chain in rule 5.
 8. "Bekleyen siparişleri kontrol et ve teslim edilen ürünleri stoğa ekle" -> goal=RECEIVE with ONLY list_incoming_orders(pending_only=true,ready_only=true); wait for confirmation before receive_orders.
+9. "Toplam bütçe 50.000 TL'yi geçmeyecek şekilde eksik ürünleri tamamla" -> goal=PLAN: calculate_replenishment(arguments={{}}); then create_procurement_plan(items={{"$from":"step_1.replenishments","$transform":"replenishments_to_items"}},objective="CHEAPEST",filters={{"max_total_budget":50000}}).
 
 Return only the execution_plan JSON object.
 """
