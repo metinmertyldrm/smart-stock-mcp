@@ -2,9 +2,9 @@
 
 Session credentials remain opaque random tokens and only their SHA-256 digests
 are persisted. Anonymous development sessions continue to support bearer
-transport, while local identity mode can resolve the same opaque credential from
-an HttpOnly cookie. Local sessions also receive a separate CSRF value whose hash
-is stored server-side.
+transport, while local identity mode resolves a CSRF-enabled opaque credential
+from an HttpOnly cookie. Legacy bearer sessions are not accepted as local cookie
+sessions after migration.
 """
 from __future__ import annotations
 
@@ -113,13 +113,7 @@ def _configured_ttl() -> int:
 
 
 class SessionStore:
-    """SQLite-backed opaque-token store.
-
-    Existing anonymous/TASK 10 session databases are migrated in place by adding
-    nullable ``user_id`` and ``csrf_hash`` columns. A fresh connection is used
-    per operation so the store remains safe across the ASGI event loop and
-    worker threads.
-    """
+    """SQLite-backed opaque-token store with in-place schema migration."""
 
     def __init__(self, path: str = DEFAULT_SESSION_DB, ttl_seconds: int | None = None):
         self.path = path
@@ -195,13 +189,24 @@ class SessionStore:
             )
             return row
 
-    def principal_for_token(self, token: str | None) -> SessionPrincipal:
-        normalized = parse_session_token(token)
-        row = self._row_for_token(normalized)
+    @staticmethod
+    def _principal_from_row(row: sqlite3.Row) -> SessionPrincipal:
         return SessionPrincipal(
             owner_id=str(row["owner_id"]),
             user_id=str(row["user_id"]) if row["user_id"] is not None else None,
         )
+
+    def principal_for_token(self, token: str | None) -> SessionPrincipal:
+        normalized = parse_session_token(token)
+        return self._principal_from_row(self._row_for_token(normalized))
+
+    def principal_for_cookie(self, token: str | None) -> SessionPrincipal:
+        """Resolve only sessions minted for the cookie/CSRF transport."""
+        normalized = parse_session_token(token)
+        row = self._row_for_token(normalized)
+        if not row["csrf_hash"]:
+            raise SessionError("Legacy session is not cookie-enabled")
+        return self._principal_from_row(row)
 
     def principal_for_authorization(self, authorization: str | None) -> SessionPrincipal:
         return self.principal_for_token(parse_bearer_token(authorization))
