@@ -120,7 +120,8 @@ KURALLAR:
 - ARİTMETİK YAPMA: Karşılaştırmalarda varsa `hesaplanan_karsilastirma` değerlerini aynen kullan; yeniden toplama, çıkarma veya yüzde hesabı yapma.
 - Sipariş miktarı soruluyorsa replenishmentQuantityNeeded/quantity değerlerini doğrudan belirt.
 - İki plan varsa maliyet, teslimat ve satıcı verilerini karşılaştır; veri yoksa tahmin etme.
-- JSON değil, kısa ve doğal Türkçe cevap ver.
+- Yalnızca {"answer":"kısa ve doğal Türkçe cevap"} biçiminde JSON üret.
+- `answer` dışında alan, Markdown, ön açıklama veya iç muhakeme yazma.
 """
 
 
@@ -216,10 +217,16 @@ def _context_block(last_successful_plan, state, valid_cached_plans) -> str:
             ref_id = state.last_reference_id
             ref_data = state.references.get(ref_id)
             if ref_data:
-                lines.append(
+                reference_line = (
                     f"LAST_REFERENCE=id:{ref_id},type:{ref_data['type']},"
                     f"source:{ref_data['source_tool']},count:{ref_data['count']}"
                 )
+                reference_data = ref_data.get("data")
+                if ref_data.get("source_tool") == "search_offers" and isinstance(reference_data, dict):
+                    query = reference_data.get("query")
+                    if query:
+                        reference_line += f",query:{json.dumps(query, ensure_ascii=False)}"
+                lines.append(reference_line)
         if getattr(state, "pending_draft_id", None):
             lines.append(f"PENDING_DRAFT_ID={state.pending_draft_id}")
         if getattr(state, "pending_receive_ids", None):
@@ -274,8 +281,9 @@ NON-NEGOTIABLE SAFETY / ROUTING RULES:
 11. Current-plan references use {{"$from":"step_id.path"}}. Conversation context uses {{"$from_context":"name.path"}}. Never put last_reference/last_plan/etc. inside `$from`.
 12. Valid context roots: last_plan,last_cheapest_plan,last_fastest_plan,last_product,last_replenishment,last_reference,pending_draft_id,pending_receive_ids. Only declare context_sources that actually exist in CONTEXT.
 13. calculate_replenishment/get_stock_replenishment_needed results expose `replenishments`; product listing/search tools expose `products`.
-14. If both cached cheapest and fastest plans exist and the user asks to compare them: goal=REASON, steps=[], context_sources=["last_cheapest_plan","last_fastest_plan"]. If missing, retrieve replenishment once and create CHEAPEST and FASTEST plans as REASON steps.
-15. `answer` must be Turkish. Do not invent tool results or bypass host confirmation rules.
+14. If both cached cheapest and fastest procurement plans exist and the user asks to compare them: goal=REASON, steps=[], context_sources=["last_cheapest_plan","last_fastest_plan"]. If missing, retrieve replenishment once and create CHEAPEST and FASTEST plans as REASON steps.
+15. If LAST_REFERENCE has source:search_offers and the user asks to compare the cheapest and fastest prior offers, call search_offers again with its recorded query. This refreshes marketplace data through MCP; goal=REASON.
+16. `answer` must be Turkish. Do not invent tool results or bypass host confirmation rules.
 
 REFERENCE TRANSFORMS:
 - replenishments_to_items
