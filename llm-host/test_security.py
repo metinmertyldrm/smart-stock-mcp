@@ -47,7 +47,6 @@ class SessionStoreTest(unittest.TestCase):
         session = self.store.create()
         owner_a = self.store.owner_for_authorization(f"Bearer {session['token']}")
         owner_b = self.store.owner_for_authorization(f"Bearer {session['token']}")
-
         self.assertEqual(owner_a, owner_b)
         self.assertTrue(session["expiresAt"])
 
@@ -58,12 +57,19 @@ class SessionStoreTest(unittest.TestCase):
         self.assertEqual(direct, bearer)
         self.assertEqual(direct.conversation_owner_id, "user-123")
 
+    def test_cookie_transport_accepts_only_csrf_enabled_sessions(self):
+        legacy = self.store.create(user_id="user-123")
+        modern = self.store.create(user_id="user-123", with_csrf=True)
+        with self.assertRaisesRegex(SessionError, "not cookie-enabled"):
+            self.store.principal_for_cookie(legacy["token"])
+        principal = self.store.principal_for_cookie(modern["token"])
+        self.assertEqual(principal.user_id, "user-123")
+
     def test_user_bound_session_resolves_to_stable_user_owner(self):
         session_a = self.store.create(user_id="user-123")
         session_b = self.store.create(user_id="user-123")
         principal_a = self.store.principal_for_authorization(f"Bearer {session_a['token']}")
         principal_b = self.store.principal_for_authorization(f"Bearer {session_b['token']}")
-
         self.assertNotEqual(principal_a.owner_id, principal_b.owner_id)
         self.assertEqual(principal_a.user_id, "user-123")
         self.assertEqual(principal_b.user_id, "user-123")
@@ -146,10 +152,8 @@ class SessionStoreTest(unittest.TestCase):
         expired = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
         with sqlite3.connect(self.path) as db:
             db.execute("UPDATE sessions SET expires_at=? WHERE token_hash=?", (expired, digest))
-
         with self.assertRaisesRegex(SessionError, "Session expired"):
             self.store.owner_for_authorization(f"Bearer {session['token']}")
-
         with sqlite3.connect(self.path) as db:
             count = db.execute("SELECT COUNT(*) FROM sessions WHERE token_hash=?", (digest,)).fetchone()[0]
         self.assertEqual(count, 0)
