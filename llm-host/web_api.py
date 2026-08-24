@@ -27,7 +27,7 @@ from prompt import get_reasoning_prompt
 
 WRITE_TOOLS = {"create_purchase_draft", "place_order", "create_incoming_order",
                "create_incoming_orders", "receive_order", "receive_orders"}
-WRITE_INTENT_WORDS = ("sipariş", "taslak", "satın al", "oluştur", "place", "draft", "order",
+WRITE_INTENT_WORDS = ("sipariş", "taslak", "satın al", "oluştur", "draft", "order",
                       "stoğa al", "stoga al", "teslim al", "receive")
 NEGATED_WRITE_PHRASES = (
     "henüz sipariş oluşturma",
