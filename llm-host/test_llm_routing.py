@@ -22,6 +22,21 @@ class FastReadOnlyPlannerRoutingTest(unittest.TestCase):
         self.assertIn('"tool":"list_out_of_stock"', prepared[0]["content"])
         self.assertNotIn("create_purchase_draft", prepared[0]["content"])
 
+    def test_zero_stock_quantity_phrase_with_no-order_guard_uses_fast_route(self):
+        prepared, tool = prepare_inference_messages([
+            {"role": "system", "content": FULL_SYSTEM},
+            {
+                "role": "user",
+                "content": (
+                    "Stok miktarı sıfır olan ürünleri listele. Her ürün için ürün adı, "
+                    "SKU, minimum stok ve hedef stok bilgisini göster. Henüz sipariş oluşturma."
+                ),
+            },
+        ])
+
+        self.assertEqual("list_out_of_stock", tool)
+        self.assertIn('"tool":"list_out_of_stock"', prepared[0]["content"])
+
     def test_low_stock_lookup_uses_low_stock_tool(self):
         prepared, tool = prepare_inference_messages([
             {"role": "system", "content": FULL_SYSTEM},
