@@ -4,11 +4,9 @@ import {beforeEach,describe,expect,it,vi} from 'vitest';
 
 const mocks=vi.hoisted(()=>({
  mode:vi.fn(),
- hasSession:vi.fn(),
  me:vi.fn(),
  login:vi.fn(),
  logout:vi.fn(),
- clearSession:vi.fn(),
 }));
 
 vi.mock('../api/client',()=>{
@@ -16,7 +14,7 @@ vi.mock('../api/client',()=>{
  return {
   ApiError,
   authChangedEvent:'smart-stock-auth-changed',
-  api:{auth:{mode:mocks.mode,hasSession:mocks.hasSession,me:mocks.me,login:mocks.login,logout:mocks.logout,clearSession:mocks.clearSession}},
+  api:{auth:{mode:mocks.mode,me:mocks.me,login:mocks.login,logout:mocks.logout}},
  };
 });
 
@@ -30,14 +28,21 @@ function renderProvider(queryClient:QueryClient){
  return render(<QueryClientProvider client={queryClient}><AuthProvider><SessionView/></AuthProvider></QueryClientProvider>);
 }
 
-describe('AuthProvider cache isolation',()=>{
+describe('AuthProvider cookie-session cache isolation',()=>{
  beforeEach(()=>{
   vi.clearAllMocks();
   mocks.mode.mockResolvedValue('local');
-  mocks.hasSession.mockReturnValue(false);
-  mocks.me.mockResolvedValue(admin);
+  mocks.me.mockRejectedValue(new Error('no session'));
   mocks.login.mockResolvedValue(admin);
   mocks.logout.mockResolvedValue(undefined);
+ });
+
+ it('checks server session on startup instead of browser token storage',async()=>{
+  mocks.me.mockResolvedValueOnce(admin);
+  const queryClient=new QueryClient({defaultOptions:{queries:{retry:false}}});
+  renderProvider(queryClient);
+  await screen.findByText('admin1');
+  expect(mocks.me).toHaveBeenCalledTimes(1);
  });
 
  it('clears cached user-scoped data on login and logout',async()=>{
@@ -61,17 +66,27 @@ describe('AuthProvider cache isolation',()=>{
   expect(mocks.logout).toHaveBeenCalledTimes(1);
  });
 
- it('clears cached data when another browser tab removes the session',async()=>{
-  mocks.hasSession.mockReturnValue(true);
+ it('re-checks /me and clears cache when another tab logs out',async()=>{
+  mocks.me.mockResolvedValueOnce(admin);
   const queryClient=new QueryClient({defaultOptions:{queries:{retry:false}}});
   renderProvider(queryClient);
 
   await screen.findByText('admin1');
   queryClient.setQueryData(['ai-conversation','cross-tab-user'],{secret:'cross-tab-data'});
-  mocks.hasSession.mockReturnValue(false);
-  window.dispatchEvent(new StorageEvent('storage',{key:'smart-stock-session-token',oldValue:'token',newValue:null}));
+  mocks.me.mockRejectedValueOnce(new Error('session revoked'));
+  window.dispatchEvent(new StorageEvent('storage',{key:'smart-stock-auth-epoch',oldValue:'1',newValue:'2'}));
 
   await screen.findByRole('heading',{name:'Güvenli giriş'});
   expect(queryClient.getQueryData(['ai-conversation','cross-tab-user'])).toBeUndefined();
+ });
+
+ it('re-checks /me when another tab logs in without sharing credentials',async()=>{
+  const queryClient=new QueryClient({defaultOptions:{queries:{retry:false}}});
+  renderProvider(queryClient);
+  await screen.findByRole('heading',{name:'Güvenli giriş'});
+
+  mocks.me.mockResolvedValueOnce(admin);
+  window.dispatchEvent(new StorageEvent('storage',{key:'smart-stock-auth-epoch',oldValue:'1',newValue:'2'}));
+  await screen.findByText('admin1');
  });
 });

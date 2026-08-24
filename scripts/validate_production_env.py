@@ -35,6 +35,8 @@ DIGEST_RE = re.compile(r"@sha256:([0-9a-fA-F]{64})$")
 DB_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 IDENTITY_USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{2,63}$")
 TRUE_VALUES = {"1", "true", "yes", "on"}
+FALSE_VALUES = {"0", "false", "no", "off"}
+PUBLIC_BINDS = {"0.0.0.0", "::", "[::]"}
 
 
 def parse_env_file(path: Path) -> dict[str, str]:
@@ -102,6 +104,17 @@ def secret_is_placeholder(value: str) -> bool:
     )
 
 
+def validate_integer_range(
+    values: dict[str, str], name: str, default: int, minimum: int, maximum: int, errors: list[str]
+) -> None:
+    try:
+        value = int(values.get(name, str(default)))
+        if not minimum <= value <= maximum:
+            raise ValueError
+    except ValueError:
+        errors.append(f"{name} {minimum} ile {maximum} arasında bir tam sayı olmalı")
+
+
 def validate(values: dict[str, str]) -> list[str]:
     errors: list[str] = []
 
@@ -155,10 +168,17 @@ def validate(values: dict[str, str]) -> list[str]:
         errors.append("DB_NAME yalnız harf, rakam ve alt çizgi içermeli ve harf/alt çizgi ile başlamalı")
 
     bind_address = values.get("WEB_BIND_ADDRESS", "127.0.0.1").strip()
-    if bind_address in {"0.0.0.0", "::", "[::]"} and not is_true(values.get("ALLOW_PUBLIC_HTTP_BIND")):
+    public_bind = bind_address in PUBLIC_BINDS
+    if public_bind and not is_true(values.get("ALLOW_PUBLIC_HTTP_BIND")):
         errors.append(
             "WEB_BIND_ADDRESS public interface'e açılıyor; bunu bilerek yapıyorsanız ALLOW_PUBLIC_HTTP_BIND=true ayarlayın"
         )
+
+    cookie_secure = values.get("LLM_SESSION_COOKIE_SECURE", "auto").strip().casefold()
+    if cookie_secure not in TRUE_VALUES | FALSE_VALUES | {"auto"}:
+        errors.append("LLM_SESSION_COOKIE_SECURE true, false veya auto olmalı")
+    elif public_bind and cookie_secure not in TRUE_VALUES:
+        errors.append("Public bind kullanılırken LLM_SESSION_COOKIE_SECURE=true zorunlu")
 
     try:
         web_port = int(values.get("WEB_PORT", "8080"))
@@ -167,12 +187,11 @@ def validate(values: dict[str, str]) -> list[str]:
     except ValueError:
         errors.append("WEB_PORT 1-65535 arasında bir tam sayı olmalı")
 
-    try:
-        ttl = int(values.get("LLM_SESSION_TTL_SECONDS", "86400"))
-        if not 300 <= ttl <= 2_592_000:
-            raise ValueError
-    except ValueError:
-        errors.append("LLM_SESSION_TTL_SECONDS 300 ile 2592000 arasında olmalı")
+    validate_integer_range(values, "LLM_SESSION_TTL_SECONDS", 86400, 300, 2_592_000, errors)
+    validate_integer_range(values, "LLM_LOGIN_MAX_FAILURES", 5, 1, 50, errors)
+    validate_integer_range(values, "LLM_LOGIN_WINDOW_SECONDS", 300, 1, 86_400, errors)
+    validate_integer_range(values, "LLM_LOGIN_BLOCK_SECONDS", 300, 1, 86_400, errors)
+    validate_integer_range(values, "LLM_LOGIN_RATE_LIMIT_MAX_KEYS", 5000, 100, 100_000, errors)
 
     return errors
 
@@ -200,6 +219,7 @@ def main(argv: list[str] | None = None) -> int:
     print("  [OK] Required values are present")
     print("  [OK] Database credential policy passed")
     print("  [OK] Local identity/bootstrap policy passed")
+    print("  [OK] Cookie/CSRF and login throttle policy passed")
     print("  [OK] Public origin is HTTPS-only")
     print("  [OK] External container images are digest-pinned")
     print("  [OK] HTTP bind/session settings passed")

@@ -1,19 +1,22 @@
 # Production deployment
 
-This document describes the hardened Smart Stock production deployment contract introduced in TASK 09 and extended with local identity/RBAC in TASK 10. It is intentionally separate from the default `docker-compose.yml`, which remains the local development/demo topology.
+This document describes the hardened Smart Stock production deployment contract introduced in TASK 09, extended with local identity/RBAC in TASK 10, and hardened with cookie sessions, CSRF protection and login throttling in TASK 11. It is intentionally separate from the default `docker-compose.yml`, which remains the local development/demo topology.
 
 ## Security boundary
 
-Production is fail-closed around both deployment hardening and user identity:
+Production is fail-closed around deployment hardening, user identity and browser sessions:
 
 - only the web gateway publishes a host port;
 - PostgreSQL, stock-service, llm-host and Ollama remain on Docker-internal networks;
 - `LLM_AUTH_MODE=local` is required;
-- production stock reads require a valid bearer session at the nginx gateway;
+- production local identity uses an `HttpOnly`, `SameSite=Strict` session cookie rather than a JavaScript-stored bearer credential;
+- state-changing authenticated LLM requests require CSRF proof;
+- production stock reads require a valid local session at the nginx gateway;
+- browser credentials are stripped before stock-service receives the request;
 - browser stock mutations remain blocked;
 - AI write tools are additionally restricted by server-side roles and confirmation rules.
 
-The included gateway is still bound to loopback by default. Put it behind a trusted HTTPS reverse proxy for internet-facing deployment. TASK 10 removes the need for a separate upstream login layer solely to provide Smart Stock user accounts, but it does not replace TLS, WAF/rate-limiting, MFA or enterprise SSO infrastructure.
+The included gateway is still bound to loopback by default. Put it behind a trusted HTTPS reverse proxy for internet-facing deployment. Smart Stock provides local user accounts, session/CSRF protection and process-local login throttling, but it does not replace TLS termination, distributed WAF/rate-limiting, MFA or enterprise SSO infrastructure.
 
 ## 1. Prepare production environment
 
@@ -32,6 +35,18 @@ LLM_BOOTSTRAP_ADMIN_PASSWORD=<strong-random-password>
 PUBLIC_ORIGIN=https://stock.example.com
 ```
 
+TASK 11 browser-session defaults are included in the template:
+
+```text
+LLM_SESSION_COOKIE_SECURE=auto
+LLM_LOGIN_MAX_FAILURES=5
+LLM_LOGIN_WINDOW_SECONDS=300
+LLM_LOGIN_BLOCK_SECONDS=300
+LLM_LOGIN_RATE_LIMIT_MAX_KEYS=5000
+```
+
+`LLM_SESSION_COOKIE_SECURE=auto` exists for a loopback-only acceptance run such as `http://127.0.0.1:18080`. For a real HTTPS deployment, set it explicitly to `true`.
+
 Do not paste production passwords into issue trackers, chat logs or shell history shared with others. The bootstrap password is validated as a production secret and must not use template/default values.
 
 The application gateway defaults to:
@@ -41,7 +56,7 @@ WEB_BIND_ADDRESS=127.0.0.1
 WEB_PORT=8080
 ```
 
-This is deliberate. A trusted reverse proxy should terminate TLS and forward to this loopback listener. Binding plain HTTP to `0.0.0.0` requires explicit `ALLOW_PUBLIC_HTTP_BIND=true` and should not be used as a substitute for TLS.
+This is deliberate. A trusted reverse proxy should terminate TLS and forward to this loopback listener. Binding plain HTTP to `0.0.0.0` requires explicit `ALLOW_PUBLIC_HTTP_BIND=true`; TASK 11 additionally requires `LLM_SESSION_COOKIE_SECURE=true` for such an opt-in. Public HTTP is still not a substitute for TLS.
 
 The first administrator is created only if the identity database contains no users. Later changes to bootstrap environment variables do not replace existing accounts.
 
@@ -79,7 +94,10 @@ The validator rejects, among other things:
 - mutable or placeholder external image references;
 - unsafe database names;
 - accidental public plain-HTTP bind;
-- invalid port or session-TTL settings.
+- unsafe public-bind cookie policy;
+- invalid port/session-TTL settings;
+- invalid cookie-secure mode;
+- invalid or unbounded login-throttling settings.
 
 Then audit the rendered Compose security contract without starting containers:
 
@@ -87,19 +105,22 @@ Then audit the rendered Compose security contract without starting containers:
 python scripts/production_smoke.py --env-file .env.production --config-only
 ```
 
-The audit verifies that only the gateway publishes a host port, app containers retain their hardening, telemetry uses production identity, and the LLM host receives the local-auth/identity configuration.
+The audit verifies that only the gateway publishes a host port, app containers retain their hardening, telemetry uses production identity, and the LLM host receives the local-auth/identity/session configuration.
 
-## 4. Persistent identity and conversations
+## 4. Persistent identity, sessions and conversations
 
 Production keeps LLM-host persistent state under the named `llm-prod-data` volume, including:
 
 - conversations;
-- bearer-session hashes;
+- opaque session hashes;
+- per-session CSRF hashes;
 - local identities and password hashes.
 
 The identity database is separate from the business PostgreSQL database but shares the protected LLM data volume. Do not delete that volume during routine restart or upgrade operations.
 
-Passwords are stored only as salted `scrypt` hashes. Bearer tokens are stored only as SHA-256 digests.
+Passwords are stored only as salted `scrypt` hashes. Session and CSRF values are stored only as SHA-256 digests. The local login response does not return the opaque session token to browser JavaScript.
+
+TASK 10 sessions that predate the CSRF column are intentionally not accepted as TASK 11 local cookie sessions. Existing users and identity data remain intact; users simply sign in again after the upgrade.
 
 ## 5. Database migrations
 
@@ -165,14 +186,18 @@ The runtime smoke verifies:
 
 - production Compose hardening;
 - gateway health and LLM readiness;
-- production auth mode is `local`;
+- production auth mode is `local` and session transport is `cookie`;
 - anonymous session issuance is disabled;
 - unauthenticated stock reads and metrics are rejected;
-- bootstrap ADMIN login and `/api/auth/me` work;
+- bootstrap ADMIN login succeeds without returning a bearer token;
+- `/api/auth/me` works through the cookie session;
 - authenticated stock reads succeed through the gateway;
 - ADMIN metrics work;
+- bounded failed-login attempts reach a `429` throttle response;
 - stock mutation methods remain blocked;
-- logout invalidates subsequent LLM and stock access with the old token.
+- an authenticated mutation without CSRF proof is rejected;
+- the same logout with valid CSRF proof succeeds;
+- logout invalidates subsequent LLM and stock access.
 
 The smoke does not ask Ollama to generate a response.
 
@@ -194,11 +219,13 @@ The final active ADMIN cannot be disabled or demoted. Create another ADMIN befor
 `/stock/` is read-only and authenticated:
 
 1. nginx rejects methods other than `GET`/`HEAD`;
-2. nginx performs an internal authorization subrequest to `llm-host /api/auth/me`;
+2. nginx performs an internal authorization subrequest to `llm-host /api/auth/me` with the browser session cookie;
 3. invalid/missing sessions return `401`;
-4. after authorization, nginx strips the browser `Authorization` header before forwarding to stock-service.
+4. after authorization, nginx strips both `Cookie` and `Authorization` before forwarding to stock-service.
 
-This keeps stock-service unaware of browser bearer credentials while ensuring direct calls to the public `/stock` path cannot bypass login.
+This keeps stock-service unaware of browser credentials while ensuring direct calls to the public `/stock` path cannot bypass login.
+
+CI exercises this boundary with a mock stock backend that deliberately fails if either browser credential header arrives downstream.
 
 ## 10. TLS reverse proxy
 
@@ -207,8 +234,9 @@ The included Nginx container is the application gateway, not the internet-facing
 - HTTPS-only public access;
 - a valid certificate and renewal path;
 - HTTP-to-HTTPS redirect at the outer proxy;
+- `LLM_SESSION_COOKIE_SECURE=true`;
 - request-size and timeout policies compatible with the application;
-- rate limiting/WAF policy appropriate to the deployment;
+- distributed rate limiting/WAF policy appropriate to the deployment;
 - forwarding of original host/protocol information.
 
 Do not publish stock-service, llm-host, PostgreSQL or Ollama just to make the outer proxy work. It only needs access to the web gateway.
@@ -253,7 +281,9 @@ Before an upgrade:
 3. review new Flyway migrations for backward compatibility;
 4. deploy the new release;
 5. run production smoke and inspect readiness/logs;
-6. verify login and role-sensitive access.
+6. verify login, CSRF-protected mutations and role-sensitive access.
+
+For the TASK 10 -> TASK 11 identity/session upgrade, keep the existing `llm-prod-data` volume. Existing users remain. Old sessions are expected to stop authenticating in local cookie mode and users should sign in again.
 
 Application rollback is straightforward only while database migrations remain backward compatible. Flyway migrations are forward-only by default. Do not manually delete Flyway history rows or reverse schema changes on a live database.
 
@@ -263,4 +293,4 @@ Application rollback is straightforward only while database migrations remain ba
 docker compose --env-file .env.production -f docker-compose.prod.yml down
 ```
 
-Do **not** add `-v` during normal operations. Removing volumes deletes production PostgreSQL, Ollama, conversations, bearer-session state and local user identities.
+Do **not** add `-v` during normal operations. Removing volumes deletes production PostgreSQL, Ollama, conversations, session state and local user identities.

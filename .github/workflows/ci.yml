@@ -237,16 +237,16 @@ jobs:
       - name: Verify production gateway identity boundary
         run: |
           set -euo pipefail
-          network="smart-stock-task10-${GITHUB_RUN_ID}"
+          network="smart-stock-task11-${GITHUB_RUN_ID}"
           cleanup() {
-            docker rm -f task10-web task10-llm task10-stock >/dev/null 2>&1 || true
+            docker rm -f task11-web task11-llm task11-stock >/dev/null 2>&1 || true
             docker network rm "$network" >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
           cleanup
           docker network create "$network" >/dev/null
 
-          cat >/tmp/task10_mock_stock.py <<'PY'
+          cat >/tmp/task11_mock_stock.py <<'PY'
           import json
           from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -255,8 +255,13 @@ jobs:
                   pass
 
               def do_GET(self):
+                  leaked = []
                   if self.headers.get("Authorization"):
-                      body = json.dumps({"error": "bearer leaked to stock backend"}).encode()
+                      leaked.append("authorization")
+                  if self.headers.get("Cookie"):
+                      leaked.append("cookie")
+                  if leaked:
+                      body = json.dumps({"error": "browser credential leaked to stock backend", "headers": leaked}).encode()
                       self.send_response(500)
                       self.send_header("Content-Type", "application/json")
                       self.send_header("Content-Length", str(len(body)))
@@ -277,11 +282,11 @@ jobs:
           ThreadingHTTPServer(("0.0.0.0", 8081), Handler).serve_forever()
           PY
 
-          docker run -d --name task10-stock --network "$network" --network-alias stock-service \
-            --entrypoint python -v /tmp/task10_mock_stock.py:/tmp/task10_mock_stock.py:ro \
-            smart-stock-llm:ci /tmp/task10_mock_stock.py >/dev/null
+          docker run -d --name task11-stock --network "$network" --network-alias stock-service \
+            --entrypoint python -v /tmp/task11_mock_stock.py:/tmp/task11_mock_stock.py:ro \
+            smart-stock-llm:ci /tmp/task11_mock_stock.py >/dev/null
 
-          docker run -d --name task10-llm --network "$network" --network-alias llm-host \
+          docker run -d --name task11-llm --network "$network" --network-alias llm-host \
             -e LLM_AUTH_MODE=local \
             -e LLM_BOOTSTRAP_ADMIN_USERNAME=ci-admin \
             -e LLM_BOOTSTRAP_ADMIN_PASSWORD=ci-gateway-admin-secret-42x \
@@ -294,46 +299,69 @@ jobs:
             -e APP_ENV=production \
             smart-stock-llm:ci >/dev/null
 
-          docker run -d --name task10-web --network "$network" \
+          docker run -d --name task11-web --network "$network" \
             -p 127.0.0.1:18082:8080 smart-stock-web:ci >/dev/null
 
           ready=0
           for attempt in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:18082/llm/api/auth/config >/tmp/task10-auth-config.json; then
+            if curl -fsS http://127.0.0.1:18082/llm/api/auth/config >/tmp/task11-auth-config.json; then
               ready=1
               break
             fi
             sleep 1
           done
           if [ "$ready" -ne 1 ]; then
-            docker logs task10-llm || true
-            docker logs task10-web || true
+            docker logs task11-llm || true
+            docker logs task11-web || true
             exit 1
           fi
 
-          status=$(curl -sS -o /tmp/task10-unauth-stock.json -w '%{http_code}' \
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          config = json.loads(Path('/tmp/task11-auth-config.json').read_text())
+          assert config['mode'] == 'local', config
+          assert config['sessionTransport'] == 'cookie', config
+          assert config['csrfHeader'] == 'X-CSRF-Token', config
+          PY
+
+          status=$(curl -sS -o /tmp/task11-unauth-stock.json -w '%{http_code}' \
             http://127.0.0.1:18082/stock/api/products)
           test "$status" = 401
 
-          login_json=$(curl -fsS -H 'Content-Type: application/json' \
+          curl -fsS -c /tmp/task11-cookies.txt -H 'Content-Type: application/json' \
             -d '{"username":"ci-admin","password":"ci-gateway-admin-secret-42x"}' \
-            http://127.0.0.1:18082/llm/api/auth/login)
-          token=$(printf '%s' "$login_json" | python -c 'import json,sys; print(json.load(sys.stdin)["token"])')
-          test -n "$token"
+            http://127.0.0.1:18082/llm/api/auth/login >/tmp/task11-login.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          payload = json.loads(Path('/tmp/task11-login.json').read_text())
+          assert payload['user']['role'] == 'ADMIN', payload
+          assert 'token' not in payload, 'local login must not expose bearer token'
+          PY
+          grep -q 'smart_stock_session' /tmp/task11-cookies.txt
+          csrf=$(awk '$6 == "smart_stock_csrf" {print $7}' /tmp/task11-cookies.txt | tail -n1)
+          test -n "$csrf"
 
-          curl -fsS -H "Authorization: Bearer $token" \
+          curl -fsS -b /tmp/task11-cookies.txt \
             http://127.0.0.1:18082/stock/api/products \
             | python -c 'import json,sys; assert json.load(sys.stdin) == []'
 
-          status=$(curl -sS -o /tmp/task10-write.json -w '%{http_code}' \
-            -X POST -H "Authorization: Bearer $token" \
+          status=$(curl -sS -o /tmp/task11-write.json -w '%{http_code}' \
+            -X POST -b /tmp/task11-cookies.txt \
             http://127.0.0.1:18082/stock/api/marketplace/orders)
           test "$status" = 405
 
-          curl -fsS -o /dev/null -X POST -H "Authorization: Bearer $token" \
+          status=$(curl -sS -o /tmp/task11-no-csrf.json -w '%{http_code}' \
+            -X POST -b /tmp/task11-cookies.txt \
+            http://127.0.0.1:18082/llm/api/auth/logout)
+          test "$status" = 403
+
+          curl -fsS -o /dev/null -c /tmp/task11-cookies.txt -b /tmp/task11-cookies.txt \
+            -X POST -H "X-CSRF-Token: $csrf" \
             http://127.0.0.1:18082/llm/api/auth/logout
-          status=$(curl -sS -o /tmp/task10-revoked-stock.json -w '%{http_code}' \
-            -H "Authorization: Bearer $token" \
+          status=$(curl -sS -o /tmp/task11-revoked-stock.json -w '%{http_code}' \
+            -b /tmp/task11-cookies.txt \
             http://127.0.0.1:18082/stock/api/products)
           test "$status" = 401
 

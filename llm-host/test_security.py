@@ -4,7 +4,8 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from security import (SessionError, SessionStore, parse_bearer_token,
+from security import (CsrfError, SessionError, SessionStore, csrf_token_hash,
+                      parse_bearer_token, parse_session_token,
                       session_token_hash)
 
 
@@ -16,6 +17,14 @@ class SessionTokenTest(unittest.TestCase):
             parse_bearer_token("Basic abcdefghijklmnopqrstuvwxyz0123456789")
         with self.assertRaises(SessionError):
             parse_bearer_token("Bearer short")
+
+    def test_direct_session_token_is_validated_without_transport(self):
+        token = "a" * 48
+        self.assertEqual(parse_session_token(f"  {token}  "), token)
+        with self.assertRaises(SessionError):
+            parse_session_token(None)
+        with self.assertRaises(SessionError):
+            parse_session_token("short")
 
     def test_hash_is_deterministic_but_not_plaintext(self):
         token = "a" * 48
@@ -38,21 +47,53 @@ class SessionStoreTest(unittest.TestCase):
         session = self.store.create()
         owner_a = self.store.owner_for_authorization(f"Bearer {session['token']}")
         owner_b = self.store.owner_for_authorization(f"Bearer {session['token']}")
-
         self.assertEqual(owner_a, owner_b)
         self.assertTrue(session["expiresAt"])
+
+    def test_direct_token_and_bearer_resolve_same_principal(self):
+        session = self.store.create(user_id="user-123")
+        direct = self.store.principal_for_token(session["token"])
+        bearer = self.store.principal_for_authorization(f"Bearer {session['token']}")
+        self.assertEqual(direct, bearer)
+        self.assertEqual(direct.conversation_owner_id, "user-123")
+
+    def test_cookie_transport_accepts_only_csrf_enabled_sessions(self):
+        legacy = self.store.create(user_id="user-123")
+        modern = self.store.create(user_id="user-123", with_csrf=True)
+        with self.assertRaisesRegex(SessionError, "not cookie-enabled"):
+            self.store.principal_for_cookie(legacy["token"])
+        principal = self.store.principal_for_cookie(modern["token"])
+        self.assertEqual(principal.user_id, "user-123")
 
     def test_user_bound_session_resolves_to_stable_user_owner(self):
         session_a = self.store.create(user_id="user-123")
         session_b = self.store.create(user_id="user-123")
         principal_a = self.store.principal_for_authorization(f"Bearer {session_a['token']}")
         principal_b = self.store.principal_for_authorization(f"Bearer {session_b['token']}")
-
         self.assertNotEqual(principal_a.owner_id, principal_b.owner_id)
         self.assertEqual(principal_a.user_id, "user-123")
         self.assertEqual(principal_b.user_id, "user-123")
         self.assertEqual(principal_a.conversation_owner_id, "user-123")
         self.assertEqual(self.store.owner_for_authorization(f"Bearer {session_b['token']}"), "user-123")
+
+    def test_csrf_enabled_session_validates_only_matching_value(self):
+        session = self.store.create(user_id="user-123", with_csrf=True)
+        self.store.validate_csrf(session["token"], session["csrfToken"])
+        with self.assertRaises(CsrfError):
+            self.store.validate_csrf(session["token"], "x" * 32)
+        with self.assertRaises(CsrfError):
+            self.store.validate_csrf(session["token"], None)
+
+    def test_non_csrf_session_cannot_pass_csrf_validation(self):
+        session = self.store.create()
+        with self.assertRaises(CsrfError):
+            self.store.validate_csrf(session["token"], "x" * 32)
+
+    def test_revoke_token_invalidates_cookie_style_credential(self):
+        session = self.store.create(user_id="user-a", with_csrf=True)
+        self.store.revoke_token(session["token"])
+        with self.assertRaisesRegex(SessionError, "Unknown session"):
+            self.store.principal_for_token(session["token"])
 
     def test_revoke_user_invalidates_all_user_sessions_only(self):
         user_a = self.store.create(user_id="user-a")
@@ -82,17 +123,23 @@ class SessionStoreTest(unittest.TestCase):
         with sqlite3.connect(legacy_path) as db:
             columns = {row[1] for row in db.execute("PRAGMA table_info(sessions)").fetchall()}
         self.assertIn("user_id", columns)
+        self.assertIn("csrf_hash", columns)
 
-    def test_plaintext_token_is_never_persisted(self):
-        session = self.store.create()
+    def test_plaintext_session_and_csrf_tokens_are_never_persisted(self):
+        session = self.store.create(user_id="user-123", with_csrf=True)
         token = session["token"]
+        csrf = session["csrfToken"]
         with sqlite3.connect(self.path) as db:
-            row = db.execute("SELECT token_hash FROM sessions").fetchone()
+            row = db.execute("SELECT token_hash,csrf_hash FROM sessions").fetchone()
         self.assertIsNotNone(row)
         self.assertEqual(row[0], session_token_hash(token))
+        self.assertEqual(row[1], csrf_token_hash(csrf))
         self.assertNotEqual(row[0], token)
+        self.assertNotEqual(row[1], csrf)
         with open(self.path, "rb") as handle:
-            self.assertNotIn(token.encode("utf-8"), handle.read())
+            raw = handle.read()
+        self.assertNotIn(token.encode("utf-8"), raw)
+        self.assertNotIn(csrf.encode("utf-8"), raw)
 
     def test_unknown_token_is_rejected(self):
         self.store.create()
@@ -105,10 +152,8 @@ class SessionStoreTest(unittest.TestCase):
         expired = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
         with sqlite3.connect(self.path) as db:
             db.execute("UPDATE sessions SET expires_at=? WHERE token_hash=?", (expired, digest))
-
         with self.assertRaisesRegex(SessionError, "Session expired"):
             self.store.owner_for_authorization(f"Bearer {session['token']}")
-
         with sqlite3.connect(self.path) as db:
             count = db.execute("SELECT COUNT(*) FROM sessions WHERE token_hash=?", (digest,)).fetchone()[0]
         self.assertEqual(count, 0)
