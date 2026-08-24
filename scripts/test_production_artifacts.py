@@ -57,14 +57,15 @@ class ProductionArtifactContractTest(unittest.TestCase):
         self.assertIn("steps.llm.outputs.digest", workflow)
         self.assertIn("steps.web.outputs.digest", workflow)
 
-    def test_production_stock_gateway_requires_llm_identity_subrequest(self):
+    def test_production_stock_gateway_requires_cookie_identity_subrequest_without_downstream_leak(self):
         nginx = PRODUCTION_NGINX.read_text(encoding="utf-8")
         self.assertIn("location = /_auth", nginx)
         self.assertIn("proxy_pass http://llm-host:8000/api/auth/me;", nginx)
-        self.assertIn("proxy_set_header Authorization $http_authorization;", nginx)
+        self.assertIn("proxy_set_header Cookie $http_cookie;", nginx)
+        self.assertIn('proxy_set_header Authorization "";', nginx)
         self.assertIn("location /stock/", nginx)
         self.assertIn("auth_request /_auth;", nginx)
-        self.assertIn('proxy_set_header Authorization "";', nginx)
+        self.assertIn('proxy_set_header Cookie "";', nginx)
         self.assertIn("if ($request_method !~ ^(GET|HEAD)$)", nginx)
 
     def test_production_web_image_verifies_nginx_auth_request_module(self):
