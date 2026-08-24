@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 
 from app import (MARKETPLACE_SERVER_PATH, STOCK_SERVER_PATH, CachedProcurementPlan,
                  ConversationState, clean_tool_results_for_reasoning, execute_plan,
-                 format_final_answer, format_offer_tradeoff, format_order_confirmation,
+                 format_final_answer, format_order_confirmation,
                  format_procurement_plan, format_purchase_draft, format_receive_proposal,
                  format_received_orders,
                  build_repair_instruction, get_execution_plan_prompt, is_plan_valid,
@@ -55,8 +55,8 @@ def has_write_intent(message):
     return any(word in normalized for word in WRITE_INTENT_WORDS)
 
 
-def prior_offer_comparison_plan(message, state):
-    """Resolve an explicit cheapest-vs-fastest follow-up from the last offer search."""
+def prior_offer_refresh_plan(message, state):
+    """Safe fallback when the model cannot plan an explicit offer follow-up."""
     normalized = strip_negated_write_phrases(message)
     asks_tradeoff = (
         "en ucuz" in normalized
@@ -73,12 +73,38 @@ def prior_offer_comparison_plan(message, state):
     if not isinstance(data, dict) or not isinstance(data.get("offers"), list):
         return None
 
+    query = data.get("query")
+    if not query and data["offers"]:
+        product = data["offers"][0].get("product")
+        if isinstance(product, dict):
+            query = product.get("name")
+        else:
+            query = data["offers"][0].get("productName")
+    if not query:
+        return None
+
     return {
         "type": "execution_plan",
         "goal": "REASON",
-        "steps": [],
-        "context_sources": ["last_reference"],
+        "steps": [{
+            "id": "step_1",
+            "tool": "search_offers",
+            "arguments": {"query": query},
+        }],
     }
+
+
+def structured_answer(raw, fallback):
+    """Read only the public answer field from Ollama's JSON response."""
+    try:
+        parsed = json.loads((raw or "").strip())
+        answer = parsed.get("answer") if isinstance(parsed, dict) else None
+        if isinstance(answer, str) and answer.strip():
+            return answer.strip()
+    except (TypeError, ValueError, json.JSONDecodeError):
+        pass
+    logger.warning("Ollama final answer was not a valid answer envelope; using safe formatter")
+    return fallback
 
 
 DB_PATH = os.getenv("LLM_CONVERSATIONS_DB", os.path.join(os.path.dirname(__file__), "conversations.db"))
@@ -271,9 +297,14 @@ class AgentApplication:
         self.store = store or ConversationStore()
         self.states = {}
 
-    async def _generate(self, messages):
-        """Run the blocking Ollama HTTP client outside FastAPI's event loop."""
-        return await asyncio.to_thread(self.llm.generate, messages)
+    async def _generate(self, messages, *, json_mode=False):
+        """Run Ollama outside the event loop and never bypass it for web requests."""
+        return await asyncio.to_thread(
+            self.llm.generate,
+            messages,
+            json_mode=json_mode,
+            allow_fast_route=False,
+        )
 
     async def chat(self, conversation_id, message, owner_id="anonymous"):
         started_at = now()
@@ -298,15 +329,13 @@ class AgentApplication:
         names = {t.name for t in tools}
         cached = {k: v for k, v in {"last_cheapest_plan": state.last_cheapest_plan, "last_fastest_plan": state.last_fastest_plan}.items() if is_plan_valid(v)}
         system_prompt = get_execution_plan_prompt(tools, state.last_plan, state, cached)
-        contextual_plan = prior_offer_comparison_plan(message, state)
-        raw = (
-            json.dumps(contextual_plan, ensure_ascii=False)
-            if contextual_plan is not None
-            else await self._generate([
+        raw = await self._generate(
+            [
                 {"role": "system", "content": system_prompt},
                 *state.history,
                 {"role": "user", "content": message},
-            ])
+            ],
+            json_mode=True,
         )
         repaired = False
         repair_summary = None
@@ -314,12 +343,18 @@ class AgentApplication:
             plan = parse_execution_plan(raw)
             validate_plan_against_state(plan, state)
         except ValueError as exc:
-            # Dogrulama hatasi execute_plan'den ONCE olusur; onarim dongusu buraya da uygulanmali.
-            plan = await self.repair_invalid_plan(system_prompt, message, raw, exc, state, conversation_id)
+            # Model çağrısı her zaman önce yapılır. Bilinen bir teklif takip isteğinde
+            # bozuk JSON güvenli bir read-only MCP planına düşer; diğer istekler normal
+            # model onarım akışını kullanır.
+            plan = prior_offer_refresh_plan(message, state)
+            if plan is None:
+                plan = await self.repair_invalid_plan(
+                    system_prompt, message, raw, exc, state, conversation_id
+                )
             if plan is None:
                 return self.clarification_response(conversation_id, message, permission, state, exc)
             repaired = True
-            repair_summary = "İlk plan doğrulama kurallarını karşılamadığı için güvenli ve çalıştırılabilir bir planla değiştirildi."
+            repair_summary = "Model planı doğrulanamadığı için güvenli ve çalıştırılabilir bir planla değiştirildi."
         if permission == "PLAN" and any(s.get("tool") in WRITE_TOOLS for s in plan.get("steps", [])):
             raise HTTPException(403, "Salt okunur istekte yazma işlemi engellendi.")
         self.store.add_message(conversation_id, "user", message)
@@ -403,21 +438,18 @@ class AgentApplication:
                     received_step_id = step_id
 
         goal = plan.get("goal", "").upper()
-        if (
-            execution.get("success")
-            and goal == "REASON"
-            and last_tool is None
-            and plan.get("context_sources") == ["last_reference"]
-        ):
-            answer = format_offer_tradeoff(final)
-        elif execution.get("success") and goal == "REASON" and last_tool == "search_offers":
-            # Teklif karşılaştırması tamamen yapısal tool verisinden üretilebilir.
-            # İkinci bir model çağrısı hem gereksiz gecikme yaratıyor hem de bazı
-            # Qwen sürümlerinde iç muhakemenin kullanıcı yanıtına sızmasına yol açıyor.
-            answer = format_final_answer(final, last_tool)
-        elif execution.get("success") and goal == "REASON":
+        if execution.get("success") and goal in {"INFO", "REASON"}:
             reasoning_data = clean_tool_results_for_reasoning(execution.get("results", {}))
-            answer = (await self._generate([{"role": "system", "content": get_reasoning_prompt(message, reasoning_data)}])).strip()
+            raw_answer = await self._generate(
+                [{"role": "system", "content": get_reasoning_prompt(message, reasoning_data)}],
+                json_mode=True,
+            )
+            fallback = (
+                format_final_answer(final, last_tool)
+                if last_tool
+                else format_final_answer(reasoning_data)
+            )
+            answer = structured_answer(raw_answer, fallback)
         elif goal == "CHAT":
             answer = final.get("chat_answer", "")
         elif received_step_id is not None:
@@ -540,7 +572,7 @@ class AgentApplication:
                     {"success": False, "stage": "plan_validation", "error": str(error)},
                     "",
                 )},
-            ])
+            ], json_mode=True)
             repaired = parse_execution_plan(repaired_raw)
             validate_plan_against_state(repaired, state)
             return repaired
@@ -608,7 +640,7 @@ class AgentApplication:
             repaired_raw = await self._generate([
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": build_repair_instruction(message, plan, execution, plan.get("goal", "").upper())},
-            ])
+            ], json_mode=True)
             repaired = parse_execution_plan(repaired_raw)
             validate_plan_against_state(repaired, state)
         except Exception:
