@@ -2,21 +2,28 @@
 """Production deployment contract + gateway smoke for Smart Stock.
 
 No LLM inference is performed. The script checks the rendered production Compose
-security contract, local identity boundary, and browser-facing HTTP boundary.
+security contract, local identity boundary, cookie/CSRF session behavior, login
+throttling, and browser-facing HTTP boundary.
 """
 from __future__ import annotations
 
 import argparse
+import http.cookiejar
 import json
 import os
 import subprocess
 import sys
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any
 
 from validate_production_env import merged_environment
+
+
+SESSION_COOKIE = "smart_stock_session"
+CSRF_COOKIE = "smart_stock_csrf"
 
 
 class ProductionSmokeFailure(RuntimeError):
@@ -30,6 +37,7 @@ def request(
     payload: dict[str, Any] | None = None,
     headers: dict[str, str] | None = None,
     timeout: float = 10.0,
+    opener: urllib.request.OpenerDirector | None = None,
 ) -> tuple[int, Any]:
     body = None
     request_headers = {"Accept": "application/json", **(headers or {})}
@@ -37,8 +45,9 @@ def request(
         body = json.dumps(payload).encode("utf-8")
         request_headers["Content-Type"] = "application/json"
     req = urllib.request.Request(url, data=body, headers=request_headers, method=method)
+    client = opener or urllib.request.build_opener()
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as response:
+        with client.open(req, timeout=timeout) as response:
             raw = response.read().decode("utf-8", errors="replace")
             try:
                 parsed = json.loads(raw) if raw else None
@@ -54,6 +63,29 @@ def request(
         return exc.code, parsed
     except OSError as exc:
         raise ProductionSmokeFailure(f"{method} {url} -> {type(exc).__name__}: {exc}") from exc
+
+
+class BrowserSession:
+    def __init__(self):
+        self.cookies = http.cookiejar.CookieJar()
+        self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.cookies))
+
+    def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        payload: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        timeout: float = 10.0,
+    ) -> tuple[int, Any]:
+        return request(method, url, payload=payload, headers=headers, timeout=timeout, opener=self.opener)
+
+    def cookie(self, name: str) -> str | None:
+        for cookie in self.cookies:
+            if cookie.name == name and not cookie.is_expired():
+                return cookie.value
+        return None
 
 
 def render_compose(repo_root: Path, env_file: Path | None) -> dict[str, Any]:
@@ -144,20 +176,41 @@ def audit_compose_config(config: dict[str, Any], *, allow_public_bind: bool = Fa
         raise ProductionSmokeFailure("llm-host bootstrap admin password must be set")
 
 
-def login(llm_url: str, username: str, password: str, timeout: float) -> str:
-    status, body = request(
+def login(llm_url: str, username: str, password: str, timeout: float) -> BrowserSession:
+    browser = BrowserSession()
+    status, body = browser.request(
         "POST",
         f"{llm_url}/api/auth/login",
         payload={"username": username, "password": password},
         timeout=timeout,
     )
-    token = body.get("token") if isinstance(body, dict) else None
     user = body.get("user") if isinstance(body, dict) else None
-    if status != 200 or not isinstance(token, str) or len(token) < 32:
+    if status != 200:
         raise ProductionSmokeFailure(f"Admin login failed: HTTP {status}")
+    if isinstance(body, dict) and "token" in body:
+        raise ProductionSmokeFailure("Local login exposed a bearer token in the response body")
     if not isinstance(user, dict) or user.get("role") != "ADMIN":
         raise ProductionSmokeFailure("Bootstrap login did not resolve to ADMIN")
-    return token
+    if not browser.cookie(SESSION_COOKIE):
+        raise ProductionSmokeFailure("Local login did not issue the session cookie")
+    if not browser.cookie(CSRF_COOKIE):
+        raise ProductionSmokeFailure("Local login did not issue the CSRF cookie")
+    return browser
+
+
+def verify_login_throttling(llm_url: str, timeout: float) -> None:
+    username = f"smoke-missing-{uuid.uuid4().hex}"
+    status = 0
+    for _ in range(5):
+        status, _ = request(
+            "POST",
+            f"{llm_url}/api/auth/login",
+            payload={"username": username, "password": "definitely-not-a-real-password"},
+            timeout=timeout,
+        )
+    if status != 429:
+        raise ProductionSmokeFailure(f"Login throttling returned HTTP {status}, expected 429 at threshold")
+    print("  [OK] Repeated failed logins are throttled")
 
 
 def run_http_checks(web_url: str, timeout: float, *, username: str, password: str) -> None:
@@ -178,7 +231,10 @@ def run_http_checks(web_url: str, timeout: float, *, username: str, password: st
     status, auth_config = request("GET", f"{llm_url}/api/auth/config", timeout=timeout)
     if status != 200 or not isinstance(auth_config, dict) or auth_config.get("mode") != "local":
         raise ProductionSmokeFailure(f"Production auth config returned HTTP {status}: {auth_config!r}")
-    print("  [OK] Production local identity mode")
+    if auth_config.get("sessionTransport") != "cookie" or not auth_config.get("csrfHeader"):
+        raise ProductionSmokeFailure(f"Production auth transport is not cookie/CSRF: {auth_config!r}")
+    csrf_header = str(auth_config["csrfHeader"])
+    print("  [OK] Production local identity uses cookie + CSRF transport")
 
     status, _ = request("POST", f"{llm_url}/api/session", timeout=timeout)
     if status != 404:
@@ -191,50 +247,61 @@ def run_http_checks(web_url: str, timeout: float, *, username: str, password: st
     status, _ = request("GET", f"{stock_url}/api/products", timeout=timeout)
     if status != 401:
         raise ProductionSmokeFailure(f"Unauthenticated stock read returned HTTP {status}, expected 401")
-    print("  [OK] Production stock reads require bearer authentication")
+    print("  [OK] Production stock reads require authenticated session")
 
-    token = login(llm_url, username, password, timeout)
-    auth_header = {"Authorization": f"Bearer {token}"}
-    status, me = request("GET", f"{llm_url}/api/auth/me", headers=auth_header, timeout=timeout)
+    verify_login_throttling(llm_url, timeout)
+    browser = login(llm_url, username, password, timeout)
+
+    status, me = browser.request("GET", f"{llm_url}/api/auth/me", timeout=timeout)
     if status != 200 or not isinstance(me, dict) or (me.get("user") or {}).get("role") != "ADMIN":
         raise ProductionSmokeFailure(f"Authenticated identity returned HTTP {status}")
 
-    status, products = request(
-        "GET",
-        f"{stock_url}/api/products",
-        headers=auth_header,
-        timeout=timeout,
-    )
+    status, products = browser.request("GET", f"{stock_url}/api/products", timeout=timeout)
     if status != 200 or not isinstance(products, list):
         raise ProductionSmokeFailure(f"Authenticated stock gateway returned HTTP {status}")
     print(f"  [OK] Authenticated read-only stock gateway: {len(products)} products visible")
 
-    status, metrics = request("GET", f"{llm_url}/api/metrics", headers=auth_header, timeout=timeout)
+    status, metrics = browser.request("GET", f"{llm_url}/api/metrics", timeout=timeout)
     if status != 200 or not isinstance(metrics, dict) or "http" not in metrics:
         raise ProductionSmokeFailure(f"Admin metrics returned HTTP {status}")
     print("  [OK] Metrics require authenticated ADMIN role")
 
-    status, _ = request(
+    status, _ = browser.request(
         "POST",
         f"{stock_url}/api/marketplace/orders",
         payload={"draftId": -1},
-        headers=auth_header,
         timeout=timeout,
     )
     if status != 405:
         raise ProductionSmokeFailure(f"Browser stock mutation returned HTTP {status}, expected 405")
     print("  [OK] Browser-facing stock mutations remain blocked")
 
-    status, _ = request("POST", f"{llm_url}/api/auth/logout", headers=auth_header, timeout=timeout)
+    status, _ = browser.request("POST", f"{llm_url}/api/auth/logout", timeout=timeout)
+    if status != 403:
+        raise ProductionSmokeFailure(f"Logout without CSRF returned HTTP {status}, expected 403")
+    status, _ = browser.request("GET", f"{llm_url}/api/auth/me", timeout=timeout)
+    if status != 200:
+        raise ProductionSmokeFailure("CSRF rejection unexpectedly revoked the valid session")
+    print("  [OK] Cookie-authenticated mutations require CSRF proof")
+
+    csrf = browser.cookie(CSRF_COOKIE)
+    if not csrf:
+        raise ProductionSmokeFailure("CSRF cookie disappeared before logout")
+    status, _ = browser.request(
+        "POST",
+        f"{llm_url}/api/auth/logout",
+        headers={csrf_header: csrf},
+        timeout=timeout,
+    )
     if status != 204:
         raise ProductionSmokeFailure(f"Logout returned HTTP {status}")
-    status, _ = request("GET", f"{llm_url}/api/metrics", headers=auth_header, timeout=timeout)
+    status, _ = browser.request("GET", f"{llm_url}/api/metrics", timeout=timeout)
     if status != 401:
         raise ProductionSmokeFailure(f"Revoked session returned HTTP {status}, expected 401")
-    status, _ = request("GET", f"{stock_url}/api/products", headers=auth_header, timeout=timeout)
+    status, _ = browser.request("GET", f"{stock_url}/api/products", timeout=timeout)
     if status != 401:
         raise ProductionSmokeFailure(f"Revoked stock session returned HTTP {status}, expected 401")
-    print("  [OK] Logout revokes LLM and stock gateway access")
+    print("  [OK] Logout revokes cookie session and stock gateway access")
 
 
 def run(
