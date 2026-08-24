@@ -10,7 +10,7 @@ if importlib.util.find_spec("fastapi") is None:
 
 from app import CachedProcurementPlan, ConversationState
 from web_api import (AgentApplication, ChatRequest, ConversationStore, FALLBACK_PURPOSE,
-                     TOOL_EXPLANATIONS, conversation_title, now, safe_value)
+                     TOOL_EXPLANATIONS, conversation_title, has_write_intent, now, safe_value)
 
 
 class WebApiTest(unittest.TestCase):
@@ -50,6 +50,15 @@ class WebApiTest(unittest.TestCase):
         title = conversation_title("Lütfen Galaxy S24 Ultra için ayrıntılı bir çalışma yapabilir misin?")
         self.assertLessEqual(len(title.split()), 6)
         self.assertIn("Galaxy", title)
+
+    def test_explicit_no_order_phrase_is_read_only(self):
+        message = (
+            "Galaxy S24 256GB için mevcut marketplace tekliflerini karşılaştır. "
+            "Henüz taslak veya sipariş oluşturma."
+        )
+
+        self.assertFalse(has_write_intent(message))
+        self.assertEqual(conversation_title(message), "Tedarik Tekliflerini Karşılaştırma")
 
     def test_confirm_without_pending_draft(self):
         agent = AgentApplication(AsyncMock(), AsyncMock(), self.store)
