@@ -297,7 +297,10 @@ class LLMService:
             content = message.get("content", "")
             prompt_parts.append(f"{role}: {content}")
 
-        prompt = "\n".join(prompt_parts)
+        # Qwen3 releases differ in how reliably they honor the API-level
+        # think=false flag. The prompt command is a compatible second guard
+        # that prevents hidden reasoning from leaking into the user response.
+        prompt = "/no_think\n" + "\n".join(prompt_parts)
         if not prompt.endswith("\nassistant:"):
             prompt += "\nassistant:"
 
