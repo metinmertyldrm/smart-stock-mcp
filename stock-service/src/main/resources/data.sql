@@ -3,16 +3,16 @@ INSERT INTO categories (id, name) VALUES (1, 'Elektronik') ON CONFLICT (id) DO N
 INSERT INTO categories (id, name) VALUES (2, 'Ofis Malzemeleri') ON CONFLICT (id) DO NOTHING;
 
 -- Seed Subcategories
-INSERT INTO subcategories (id, category_id, name) VALUES (1, 1, 'Akıllı Telefonlar') ON CONFLICT (id) DO NOTHING;
+INSERT INTO subcategories (id, category_id, name) VALUES (1, 1, U&'Ak\0131ll\0131 Telefonlar') ON CONFLICT (id) DO NOTHING;
 INSERT INTO subcategories (id, category_id, name) VALUES (2, 1, 'Bilgisayarlar') ON CONFLICT (id) DO NOTHING;
-INSERT INTO subcategories (id, category_id, name) VALUES (3, 2, 'Kağıt Ürünleri') ON CONFLICT (id) DO NOTHING;
+INSERT INTO subcategories (id, category_id, name) VALUES (3, 2, U&'Ka\011F\0131t \00DCr\00FCnleri') ON CONFLICT (id) DO NOTHING;
 
 -- Seed Brands
 INSERT INTO brands (id, name) VALUES (1, 'Apple') ON CONFLICT (id) DO NOTHING;
 INSERT INTO brands (id, name) VALUES (2, 'Samsung') ON CONFLICT (id) DO NOTHING;
 INSERT INTO brands (id, name) VALUES (3, 'HP') ON CONFLICT (id) DO NOTHING;
 INSERT INTO brands (id, name)
-VALUES (4, 'Dell')ON CONFLICT (id) DO NOTHING;
+VALUES (4, 'Dell') ON CONFLICT (id) DO NOTHING;
 
 
 -- Seed Models
@@ -30,15 +30,15 @@ ON CONFLICT (id) DO NOTHING;
 
 -- Seed Products
 INSERT INTO products (id, sku, name, description, subcategory_id, model_id, stock_quantity, minimum_stock, target_stock, warehouse_info) 
-VALUES (1, 'APP-IPH15P', 'iPhone 15 Pro 128GB', 'Apple amiral gemisi akıllı telefon, siyah titanyum.', 1, 1, 2, 5, 10, 'A-Blok Raf 4')
+VALUES (1, 'APP-IPH15P', 'iPhone 15 Pro 128GB', U&'Apple amiral gemisi ak\0131ll\0131 telefon, siyah titanyum.', 1, 1, 2, 5, 10, 'A-Blok Raf 4')
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO products (id, sku, name, description, subcategory_id, model_id, stock_quantity, minimum_stock, target_stock, warehouse_info) 
-VALUES (2, 'SAM-GS24', 'Galaxy S24 256GB', 'Samsung amiral gemisi akıllı telefon, gri.', 1, 2, 0, 3, 8, 'A-Blok Raf 5')
+VALUES (2, 'SAM-GS24', 'Galaxy S24 256GB', U&'Samsung amiral gemisi ak\0131ll\0131 telefon, gri.', 1, 2, 0, 3, 8, 'A-Blok Raf 5')
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO products (id, sku, name, description, subcategory_id, model_id, stock_quantity, minimum_stock, target_stock, warehouse_info) 
-VALUES (3, 'HP-LJP-M15', 'LaserJet M15w Yazıcı', 'HP Lazer yazıcı, siyah-beyaz.', 3, 3, 12, 4, 10, 'B-Blok Raf 12')
+VALUES (3, 'HP-LJP-M15', U&'LaserJet M15w Yaz\0131c\0131', U&'HP Lazer yaz\0131c\0131, siyah-beyaz.', 3, 3, 12, 4, 10, 'B-Blok Raf 12')
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO products (
@@ -57,7 +57,7 @@ VALUES (
     4,
     'DELL-LAT-5440',
     'Dell Latitude 5440',
-    'Kurumsal dizüstü bilgisayar.',
+    U&'Kurumsal diz\00FCst\00FC bilgisayar.',
     2,
     4,
     1,
@@ -83,8 +83,8 @@ INSERT INTO products (
 VALUES (
     5,
     'OFF-A4-500',
-    'A4 Fotokopi Kağıdı 500 Yaprak',
-    'Standart ofis tipi A4 fotokopi kağıdı.',
+    U&'A4 Fotokopi Ka\011F\0131d\0131 500 Yaprak',
+    U&'Standart ofis tipi A4 fotokopi ka\011F\0131d\0131.',
     3,
     NULL,
     0,
@@ -111,7 +111,7 @@ VALUES (
     6,
     'HP-WKEY-01',
     'Kablosuz Klavye',
-    'Ofis kullanımı için kablosuz klavye.',
+    U&'Ofis kullan\0131m\0131 i\00E7in kablosuz klavye.',
     2,
     5,
     4,
@@ -138,7 +138,7 @@ VALUES (
     7,
     'GEN-HDMI-2M',
     'HDMI Kablosu 2 Metre',
-    'Standart yüksek hızlı HDMI kablosu.',
+    U&'Standart y\00FCksek h\0131zl\0131 HDMI kablosu.',
     2,
     NULL,
     20,
