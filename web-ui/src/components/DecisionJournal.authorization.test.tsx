@@ -47,8 +47,8 @@ describe('RBAC authorization outcome',()=>{
 
   it('preflight reddini teknik hata yerine doğrulanmış yetki sınırı olarak gösterir',()=>{
     render(<TracePanel response={viewerDenied}/>);
-    expect(screen.getByText('Yetki nedeniyle engellendi')).toBeInTheDocument();
-    expect(screen.getByText('Doğrulanmış rol sınırı')).toBeInTheDocument();
+    expect(screen.getAllByText('Yetki nedeniyle engellendi').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText(/Doğrulanmış rol sınırı/)).toBeInTheDocument();
     expect(screen.getAllByText('Çalıştırılmadı')).toHaveLength(2);
     expect(screen.getByText(/VIEWER rolü create_purchase_draft aracını çalıştıramaz/)).toBeInTheDocument();
     expect(screen.getByText('Rol yetkilendirmesi')).toBeInTheDocument();
