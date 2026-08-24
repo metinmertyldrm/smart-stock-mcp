@@ -236,9 +236,8 @@ class WebApiTest(unittest.TestCase):
         llm = Mock()
         llm.generate.side_effect = [
             (
-                '{"type":"execution_plan","goal":"REASON","steps":['
-                '{"id":"step_1","tool":"search_offers",'
-                '"arguments":{"query":"Galaxy S24 256GB"}}]}'
+                '{"type":"execution_plan","goal":"CHAT","steps":[],'
+                '"answer":"Önceki sonuçları karşılaştırabilirim."}'
             ),
             (
                 '{"answer":"En hızlı seçenek 2.150,00 TL daha pahalı, '
