@@ -37,6 +37,35 @@ class FastReadOnlyPlannerRoutingTest(unittest.TestCase):
         self.assertEqual("list_out_of_stock", tool)
         self.assertIn('"tool":"list_out_of_stock"', prepared[0]["content"])
 
+    def test_read_only_offer_comparison_skips_planner_llm(self):
+        service = LLMService()
+        messages = [
+            {"role": "system", "content": FULL_SYSTEM},
+            {
+                "role": "user",
+                "content": (
+                    "Galaxy S24 256GB için mevcut marketplace tekliflerini karşılaştır. "
+                    "Her teklif için fiyat ve teslimatı göster. "
+                    "Henüz taslak veya sipariş oluşturma."
+                ),
+            },
+        ]
+
+        with patch("llm.requests.post") as post:
+            raw = service.generate(messages)
+
+        post.assert_not_called()
+        plan = json.loads(raw)
+        self.assertEqual("REASON", plan["goal"])
+        self.assertEqual(
+            [{
+                "id": "step_1",
+                "tool": "search_offers",
+                "arguments": {"query": "Galaxy S24 256GB"},
+            }],
+            plan["steps"],
+        )
+
     def test_low_stock_lookup_uses_low_stock_tool(self):
         prepared, tool = prepare_inference_messages([
             {"role": "system", "content": FULL_SYSTEM},
