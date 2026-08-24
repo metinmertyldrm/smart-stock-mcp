@@ -279,12 +279,12 @@ NON-NEGOTIABLE SAFETY / ROUTING RULES:
 9. Seller/marketplace filters (min_rating, max_delivery_days, max_unit_price, max_shipping_cost, max_total_budget) belong inside marketplace `filters`. Total budget maps to filters.max_total_budget, never max_unit_price. Never pass category/category_name to marketplace planning tools.
 10. For "toplam bütçe ... eksik ürünleri tamamla", NEVER invent a product_id. Use calculate_replenishment with empty arguments, then create_procurement_plan with all step_1.replenishments transformed by replenishments_to_items and filters.max_total_budget set to the requested total TL budget.
 11. For low/critical replenishment data use calculate_replenishment/get_stock_replenishment_needed. For out-of-stock plan: list_out_of_stock -> create_procurement_plan with out_of_stock_products_to_items. For low-stock plan: list_low_stock -> create_procurement_plan with low_stock_products_to_items.
-11. Current-plan references use {{"$from":"step_id.path"}}. Conversation context uses {{"$from_context":"name.path"}}. Never put last_reference/last_plan/etc. inside `$from`.
-12. Valid context roots: last_plan,last_cheapest_plan,last_fastest_plan,last_product,last_replenishment,last_reference,pending_draft_id,pending_receive_ids. Only declare context_sources that actually exist in CONTEXT.
-13. calculate_replenishment/get_stock_replenishment_needed results expose `replenishments`; product listing/search tools expose `products`.
-14. If both cached cheapest and fastest procurement plans exist and the user asks to compare them: goal=REASON, steps=[], context_sources=["last_cheapest_plan","last_fastest_plan"]. If missing, retrieve replenishment once and create CHEAPEST and FASTEST plans as REASON steps.
-15. If LAST_REFERENCE has source:search_offers and the user asks to compare the cheapest and fastest prior offers, call search_offers again with its recorded query. This refreshes marketplace data through MCP; goal=REASON.
-16. `answer` must be Turkish. Do not invent tool results or bypass host confirmation rules.
+12. Current-plan references use {{"$from":"step_id.path"}}. Conversation context uses {{"$from_context":"name.path"}}. Never put last_reference/last_plan/etc. inside `$from`.
+13. Valid context roots: last_plan,last_cheapest_plan,last_fastest_plan,last_product,last_replenishment,last_reference,pending_draft_id,pending_receive_ids. Only declare context_sources that actually exist in CONTEXT.
+14. calculate_replenishment/get_stock_replenishment_needed results expose `replenishments`; product listing/search tools expose `products`.
+15. If both cached cheapest and fastest procurement plans exist and the user asks to compare them: goal=REASON, steps=[], context_sources=["last_cheapest_plan","last_fastest_plan"]. If missing, retrieve replenishment once and create CHEAPEST and FASTEST plans as REASON steps.
+16. If LAST_REFERENCE has source:search_offers and the user asks to compare the cheapest and fastest prior offers, call search_offers again with its recorded query. This refreshes marketplace data through MCP; goal=REASON.
+17. `answer` must be Turkish. Do not invent tool results or bypass host confirmation rules.
 
 REFERENCE TRANSFORMS:
 - replenishments_to_items
