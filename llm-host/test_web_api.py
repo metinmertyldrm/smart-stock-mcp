@@ -116,52 +116,43 @@ class WebApiTest(unittest.TestCase):
         self.assertEqual(response["permissionLevel"], "FULL")
         self.assertIsNone(response["pendingDraftId"])
 
-    def test_search_offers_uses_deterministic_turkish_answer(self):
+    def test_search_offers_runs_planner_and_llm_finalizer(self):
         conversation = self.store.create("owner", "Teklif Karşılaştırma")
         client = AsyncMock()
         client.list_tools.return_value = [SimpleNamespace(name="search_offers")]
         llm = Mock()
-        llm.generate.return_value = (
-            '{"type":"execution_plan","goal":"REASON","steps":['
-            '{"id":"step_1","tool":"search_offers",'
-            '"arguments":{"query":"Galaxy S24 256GB"}}]}'
-        )
+        llm.generate.side_effect = [
+            (
+                '{"type":"execution_plan","goal":"REASON","steps":['
+                '{"id":"step_1","tool":"search_offers",'
+                '"arguments":{"query":"Galaxy S24 256GB"}}]}'
+            ),
+            (
+                '{"answer":"ElectroShop en ucuz seçenektir; FastDelivery ise '
+                'en hızlı seçenektir. Henüz taslak veya sipariş oluşturulmadı."}'
+            ),
+        ]
         agent = AgentApplication(client, llm, self.store)
         execution = {
             "success": True,
             "results": {
                 "step_1": {
+                    "query": "Galaxy S24 256GB",
                     "offers": [
                         {
-                            "id": 4,
-                            "product": {"name": "Galaxy S24 256GB", "sku": "SAM-GS24"},
-                            "seller": {"name": "TechStore", "rating": 4.8},
-                            "price": 38000,
-                            "shippingFee": 100,
-                            "totalCost": 38100,
-                            "deliveryTimeDays": 2,
-                        },
-                        {
                             "id": 5,
-                            "product": {"name": "Galaxy S24 256GB", "sku": "SAM-GS24"},
                             "seller": {"name": "ElectroShop", "rating": 4.2},
-                            "price": 37200,
-                            "shippingFee": 150,
                             "totalCost": 37350,
                             "deliveryTimeDays": 3,
                         },
                         {
                             "id": 6,
-                            "product": {"name": "Galaxy S24 256GB", "sku": "SAM-GS24"},
                             "seller": {"name": "FastDelivery", "rating": 3.9},
-                            "price": 39500,
-                            "shippingFee": 0,
                             "totalCost": 39500,
                             "deliveryTimeDays": 1,
                         },
                     ],
                     "hesaplanan_karsilastirma": {
-                        "quantity": 1,
                         "cheapestOfferId": 5,
                         "fastestOfferId": 6,
                     },
@@ -179,12 +170,13 @@ class WebApiTest(unittest.TestCase):
                 "owner",
             ))
 
-        self.assertEqual(llm.generate.call_count, 1)
-        self.assertIn("Marketplace Teklifleri", response["finalAnswer"])
-        self.assertIn("Toplam Maliyet: 37.350,00 TL", response["finalAnswer"])
-        self.assertIn("En ucuz seçenek: ElectroShop — 37.350,00 TL", response["finalAnswer"])
-        self.assertIn("En hızlı seçenek: FastDelivery — 1 gün", response["finalAnswer"])
+        self.assertEqual(llm.generate.call_count, 2)
+        self.assertIn("ElectroShop en ucuz", response["finalAnswer"])
+        self.assertIn("FastDelivery ise en hızlı", response["finalAnswer"])
         self.assertNotIn("Okay, let's", response["finalAnswer"])
+        for call in llm.generate.call_args_list:
+            self.assertTrue(call.kwargs["json_mode"])
+            self.assertFalse(call.kwargs["allow_fast_route"])
 
     def test_search_offers_result_is_saved_as_last_reference(self):
         state = ConversationState()
@@ -215,11 +207,44 @@ class WebApiTest(unittest.TestCase):
         self.assertEqual(reference["source_tool"], "search_offers")
         self.assertEqual(reference["data"]["hesaplanan_karsilastirma"]["cheapestOfferId"], 5)
 
-    def test_offer_tradeoff_followup_uses_last_reference_without_llm_or_tool(self):
+    def test_offer_tradeoff_followup_runs_ollama_mcp_and_finalizer(self):
         conversation = self.store.create("owner", "Teklif Karşılaştırma")
         client = AsyncMock()
-        client.list_tools.return_value = []
+        client.list_tools.return_value = [SimpleNamespace(name="search_offers")]
+        client.call_tool.return_value = {
+            "success": True,
+            "query": "Galaxy S24 256GB",
+            "offers": [
+                {
+                    "id": 5,
+                    "seller": {"name": "ElectroShop", "rating": 4.2},
+                    "totalCost": 37350,
+                    "deliveryTimeDays": 3,
+                },
+                {
+                    "id": 6,
+                    "seller": {"name": "FastDelivery", "rating": 3.9},
+                    "totalCost": 39500,
+                    "deliveryTimeDays": 1,
+                },
+            ],
+            "hesaplanan_karsilastirma": {
+                "cheapestOfferId": 5,
+                "fastestOfferId": 6,
+            },
+        }
         llm = Mock()
+        llm.generate.side_effect = [
+            (
+                '{"type":"execution_plan","goal":"REASON","steps":['
+                '{"id":"step_1","tool":"search_offers",'
+                '"arguments":{"query":"Galaxy S24 256GB"}}]}'
+            ),
+            (
+                '{"answer":"En hızlı seçenek 2.150,00 TL daha pahalı, '
+                'ancak 2 gün daha erken teslim edilir."}'
+            ),
+        ]
         agent = AgentApplication(client, llm, self.store)
         state = agent.states.setdefault(conversation["id"], ConversationState())
         state.last_reference_id = "ref_offers"
@@ -229,24 +254,8 @@ class WebApiTest(unittest.TestCase):
             "created_at": now(),
             "count": 1,
             "data": {
-                "offers": [
-                    {
-                        "id": 5,
-                        "seller": {"name": "ElectroShop", "rating": 4.2},
-                        "totalCost": 37350,
-                        "deliveryTimeDays": 3,
-                    },
-                    {
-                        "id": 6,
-                        "seller": {"name": "FastDelivery", "rating": 3.9},
-                        "totalCost": 39500,
-                        "deliveryTimeDays": 1,
-                    },
-                ],
-                "hesaplanan_karsilastirma": {
-                    "cheapestOfferId": 5,
-                    "fastestOfferId": 6,
-                },
+                "query": "Galaxy S24 256GB",
+                "offers": [{"id": 5}, {"id": 6}],
             },
         }
 
@@ -257,13 +266,13 @@ class WebApiTest(unittest.TestCase):
             "owner",
         ))
 
-        llm.generate.assert_not_called()
-        client.call_tool.assert_not_called()
+        self.assertEqual(llm.generate.call_count, 2)
+        client.call_tool.assert_awaited_once_with(
+            "search_offers", {"query": "Galaxy S24 256GB"}
+        )
         self.assertTrue(response["succeeded"])
         self.assertEqual(response["permissionLevel"], "PLAN")
-        self.assertEqual(response["trace"], [])
-        self.assertIn("En ucuz — ElectroShop", response["finalAnswer"])
-        self.assertIn("En hızlı — FastDelivery", response["finalAnswer"])
+        self.assertEqual(len(response["trace"]), 1)
         self.assertIn("2.150,00 TL daha pahalı", response["finalAnswer"])
         self.assertIn("2 gün daha erken", response["finalAnswer"])
 
@@ -274,7 +283,7 @@ class WebApiTest(unittest.TestCase):
         llm = Mock()
         llm.generate.side_effect = [
             '{"type":"execution_plan","goal":"REASON","steps":[],"context_sources":["last_cheapest_plan","last_fastest_plan"]}',
-            "En ucuz plan daha ekonomik, en hızlı plan ise daha erken teslim edilir.",
+            '{"answer":"En ucuz plan daha ekonomik, en hızlı plan ise daha erken teslim edilir."}',
         ]
         agent = AgentApplication(client, llm, self.store)
         state = agent.states.setdefault(conversation["id"], ConversationState())
