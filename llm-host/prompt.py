@@ -121,6 +121,7 @@ KURALLAR:
 - Sipariş miktarı soruluyorsa replenishmentQuantityNeeded/quantity değerlerini doğrudan belirt.
 - İki plan varsa maliyet, teslimat ve satıcı verilerini karşılaştır; veri yoksa tahmin etme.
 - Yalnızca {{"answer":"kısa ve doğal Türkçe cevap"}} biçiminde JSON üret.
+- `answer` değeri en fazla 180 kelime olsun; bu sınırı kesinlikle aşma.
 - `answer` dışında alan, Markdown, ön açıklama veya iç muhakeme yazma.
 """
 
