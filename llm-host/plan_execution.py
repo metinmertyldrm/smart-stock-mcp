@@ -449,6 +449,12 @@ def extract_result_text(result) -> str:
 
 
 def normalize_tool_result(result) -> dict:
+    # Unit tests and in-process adapters may already return decoded mappings,
+    # while MCP transport returns content blocks containing JSON text.
+    if isinstance(result, dict):
+        if result.get("success") is False:
+            return result
+        return {"success": True, "data": result}
     if getattr(result, "isError", False):
         return {"success": False, "error": extract_result_text(result)}
     text = extract_result_text(result)
@@ -639,7 +645,7 @@ async def execute_plan(plan: dict, client, available_tool_names: set[str], state
                             }
                 elif tool_name == "create_procurement_plan":
                     save_reference(state, "procurement_plan", tool_name, result_data)
-                elif tool_name == "compare_offers":
+                elif tool_name in {"compare_offers", "search_offers"}:
                     save_reference(state, "comparison_response", tool_name, result_data)
         except Exception as exc:
             step_durations[step_id] = round((time.perf_counter() - step_started) * 1000)
