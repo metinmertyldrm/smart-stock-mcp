@@ -10,7 +10,8 @@ if importlib.util.find_spec("fastapi") is None:
 
 from app import CachedProcurementPlan, ConversationState, execute_plan
 from web_api import (AgentApplication, ChatRequest, ConversationStore, FALLBACK_PURPOSE,
-                     TOOL_EXPLANATIONS, conversation_title, has_write_intent, now, safe_value)
+                     TOOL_EXPLANATIONS, budget_replenishment_plan, conversation_title,
+                     has_write_intent, now, safe_value)
 
 
 class WebApiTest(unittest.TestCase):
@@ -50,6 +51,23 @@ class WebApiTest(unittest.TestCase):
         title = conversation_title("Lütfen Galaxy S24 Ultra için ayrıntılı bir çalışma yapabilir misin?")
         self.assertLessEqual(len(title.split()), 6)
         self.assertIn("Galaxy", title)
+
+    def test_total_budget_shortage_plan_never_invents_product_id(self):
+        plan = budget_replenishment_plan(
+            "Toplam bütçe 50.000 TL'yi geçmeyecek şekilde eksik ürünleri tamamla."
+        )
+
+        self.assertEqual(plan["goal"], "PLAN")
+        self.assertEqual(plan["steps"][0], {
+            "id": "step_1",
+            "tool": "calculate_replenishment",
+            "arguments": {},
+        })
+        self.assertEqual(
+            plan["steps"][1]["arguments"]["filters"]["max_total_budget"],
+            50000.0,
+        )
+        self.assertNotIn("product_id", str(plan))
 
     def test_explicit_no_order_phrase_is_read_only(self):
         message = (
@@ -177,6 +195,10 @@ class WebApiTest(unittest.TestCase):
         for call in llm.generate.call_args_list:
             self.assertTrue(call.kwargs["json_mode"])
             self.assertFalse(call.kwargs["allow_fast_route"])
+        self.assertEqual(
+            llm.generate.call_args_list[1].kwargs["num_predict"],
+            512,
+        )
 
     def test_search_offers_result_is_saved_as_last_reference(self):
         state = ConversationState()
