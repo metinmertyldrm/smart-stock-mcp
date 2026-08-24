@@ -12,7 +12,11 @@ class LLMServiceTest(unittest.TestCase):
         response.json.return_value = {"response": "done"}
 
         service = LLMService()
-        result = service.generate([{"role": "user", "content": "hello"}])
+        result = service.generate(
+            [{"role": "user", "content": "hello"}],
+            json_mode=True,
+            allow_fast_route=False,
+        )
 
         self.assertEqual(result, "done")
         response.raise_for_status.assert_called_once_with()
@@ -21,6 +25,7 @@ class LLMServiceTest(unittest.TestCase):
         self.assertEqual(payload["prompt"], "/no_think\nuser: hello\nassistant:")
         self.assertFalse(payload["stream"])
         self.assertFalse(payload["think"])
+        self.assertEqual(payload["format"], "json")
         # num_predict/num_ctx artik env ile ayarlanabilir; varsayilanlari dogrula.
         self.assertEqual(payload["options"]["num_predict"], 256)
         self.assertEqual(payload["options"]["num_ctx"], 8192)
