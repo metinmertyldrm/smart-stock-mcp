@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sqlite3
 import time
 import uuid
 
@@ -33,6 +34,8 @@ from browser_security import (
     csrf_proof,
     set_local_auth_cookies,
 )
+from app import execute_plan
+from approval_audit import DraftApprovalAuditStore
 from identity import IdentityError, IdentityStore, ROLE_VIEWER
 from observability import (
     correlate_response_payload,
@@ -66,6 +69,9 @@ MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 CHAT_ROUTES = {"/api/chat", "/api/conversations/{conversation_id}/confirm"}
 sessions = SessionStore(SESSION_PATH)
 identities = IdentityStore(IDENTITY_PATH)
+approval_audits = DraftApprovalAuditStore(
+    os.getenv("LLM_APPROVAL_AUDIT_DB", SESSION_PATH)
+)
 login_limiter = configured_login_limiter()
 if AUTH_MODE == "local":
     identities.bootstrap_admin(
@@ -129,7 +135,38 @@ def require_capability(request: Request, capability: str):
 
 
 def is_confirmation_path(path: str) -> bool:
-    return path.startswith("/api/conversations/") and path.endswith("/confirm")
+    conversation_confirmation = (
+        path.startswith("/api/conversations/") and path.endswith("/confirm")
+    )
+    central_draft_confirmation = (
+        path.startswith("/api/approvals/drafts/") and path.endswith("/confirm")
+    )
+    return conversation_confirmation or central_draft_confirmation
+
+
+def build_draft_approval_plan(draft_id: int) -> dict:
+    """Build the only write plan accepted by the cross-user approval endpoint."""
+    return {
+        "type": "execution_plan",
+        "goal": "ORDER",
+        "steps": [
+            {
+                "id": "place_order",
+                "tool": "place_order",
+                "arguments": {"draft_id": int(draft_id)},
+            },
+            {
+                "id": "register_incoming",
+                "tool": "create_incoming_orders",
+                "arguments": {
+                    "items": {
+                        "$from": "place_order",
+                        "$transform": "order_to_incoming_items",
+                    }
+                },
+            },
+        ],
+    }
 
 
 def _client_source(request: Request) -> str | None:
@@ -173,6 +210,16 @@ async def correlate_chat_response(response, request_id: str, identity=None):
                 "role": identity.role,
             }
             correlated = True
+        draft_id = payload.get("pendingDraftId")
+        if draft_id is not None:
+            try:
+                approval_audits.record_created(int(draft_id), identity)
+            except (TypeError, ValueError, sqlite3.Error) as exc:
+                emit_event(
+                    "security.draft.creator_audit_failed",
+                    level=logging.WARNING,
+                    errorType=type(exc).__name__,
+                )
     if correlated:
         try:
             persist_correlated_chat_response(payload, getattr(app.state.agent, "store", None))
@@ -321,6 +368,77 @@ async def update_user(user_id: str, body: UpdateUserRequest, request: Request):
         raise HTTPException(422, str(exc)) from exc
     emit_event("security.user.updated", actorRole=actor.role, targetRole=user.role)
     return user.public_dict()
+
+
+@app.get("/api/approvals/drafts/{draft_id}/audit")
+async def draft_approval_audit(draft_id: int, request: Request):
+    current_identity(request)
+    if draft_id <= 0:
+        raise HTTPException(422, "Taslak kimliği pozitif bir sayı olmalı.")
+    return approval_audits.get(draft_id)
+
+
+@app.post("/api/approvals/drafts/{draft_id}/confirm")
+async def approve_purchase_draft(draft_id: int, request: Request):
+    """Approve a central draft as MANAGER/ADMIN through the MCP boundary."""
+    actor = require_capability(request, "confirm")
+    if draft_id <= 0:
+        raise HTTPException(422, "Taslak kimliği pozitif bir sayı olmalı.")
+
+    agent = getattr(app.state, "agent", None)
+    if agent is None:
+        raise HTTPException(503, "AI işlem servisi henüz hazır değil.")
+
+    tools = await agent.client.list_tools()
+    available = {tool.name for tool in tools}
+    plan = build_draft_approval_plan(draft_id)
+    execution = await execute_plan(plan, agent.client, available)
+    results = execution.get("results") or {}
+    order = results.get("place_order")
+    order_id = order.get("id") if isinstance(order, dict) else None
+
+    # place_order may have committed before a later incoming-order failure.  In
+    # that case preserve the real approver audit and report the partial outcome
+    # explicitly instead of inviting an unsafe blind retry.
+    audit = None
+    if isinstance(order, dict):
+        audit = approval_audits.record_approved(draft_id, actor, order_id)
+
+    if not execution.get("success"):
+        if isinstance(order, dict):
+            emit_event(
+                "security.draft.approval_partial",
+                level=logging.ERROR,
+                role=actor.role,
+                draftId=draft_id,
+                orderId=order_id,
+                failedTool=execution.get("failed_tool"),
+            )
+            raise HTTPException(
+                502,
+                f"Sipariş #{order_id or 'bilinmeyen'} oluşturuldu ancak beklenen "
+                "stok kaydı tamamlanamadı. Tekrar onaylamayın; sistem yöneticisi "
+                "işlem günlüğünü kontrol etmelidir.",
+            )
+        detail = execution.get("business_reason") or execution.get("error")
+        raise HTTPException(409, detail or "Taslak onaylanamadı.")
+
+    incoming = results.get("register_incoming")
+    if audit is None:
+        audit = approval_audits.record_approved(draft_id, actor, order_id)
+    emit_event(
+        "security.draft.approved",
+        role=actor.role,
+        draftId=draft_id,
+        orderId=order_id,
+    )
+    return {
+        "success": True,
+        "draftId": draft_id,
+        "order": order,
+        "incoming": incoming,
+        "audit": audit,
+    }
 
 
 @app.get("/api/ready")

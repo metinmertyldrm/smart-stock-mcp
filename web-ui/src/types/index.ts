@@ -4,6 +4,8 @@ export interface DraftItem {id:number;product:Product;quantity:number;seller:Nam
 export interface Draft {id:number;totalCost:number;status:string;createdAt?:string;items:DraftItem[]}
 export interface IncomingOrder {id:number;product:Product;quantity:number;status:string;expectedDeliveryDate?:string;createdAt?:string}
 export interface MarketOrder {id:number;draftId:number;totalCost:number;status:string;createdAt:string;expectedDeliveryDate?:string;items:DraftItem[]}
+export interface DraftApprovalAudit {draftId:number;createdBy?:AuditActor|null;creatorRecordedAt?:string|null;approvedBy?:AuditActor|null;approvedAt?:string|null;orderId?:number|null}
+export interface DraftApprovalResponse {success:true;draftId:number;order:MarketOrder;incoming:unknown;audit:DraftApprovalAudit}
 export type SafetyStatus='passed'|'warning'|'blocked'|'pending'
 export interface SafetyCheck {label:string;status:SafetyStatus;detail:string;policyId?:string;checkedAt?:string}
 export interface Explanation {requestSummary:string;originalRequest?:string;detectedIntent?:string;entities?:string[];missingInformation?:string[];ambiguities?:string[];assumptions?:string[];goalTitle:string;goalExplanation:string;goalReasons?:string[];alternativeExplanation?:string;confidence?:string;permissionExplanation:string;permissionSource?:string;permissionReason?:string;allowedActions?:string[];blockedActions?:string[];approvalExplanation?:string;riskLevel?:string;findings:string[];decisionSummary:string;changes?:string[];userNextAction?:string;rollback?:string;safetyChecks:SafetyCheck[];warnings:string[];repaired:boolean;repairSummary?:string}
