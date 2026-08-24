@@ -16,8 +16,9 @@ from pydantic import BaseModel, Field
 
 from app import (MARKETPLACE_SERVER_PATH, STOCK_SERVER_PATH, CachedProcurementPlan,
                  ConversationState, clean_tool_results_for_reasoning, execute_plan,
-                 format_final_answer, format_order_confirmation, format_procurement_plan,
-                 format_purchase_draft, format_receive_proposal, format_received_orders,
+                 format_final_answer, format_offer_tradeoff, format_order_confirmation,
+                 format_procurement_plan, format_purchase_draft, format_receive_proposal,
+                 format_received_orders,
                  build_repair_instruction, get_execution_plan_prompt, is_plan_valid,
                  parse_execution_plan,
                  resolve_step_arguments, validate_plan_against_state)
@@ -52,6 +53,32 @@ def strip_negated_write_phrases(message):
 def has_write_intent(message):
     normalized = strip_negated_write_phrases(message)
     return any(word in normalized for word in WRITE_INTENT_WORDS)
+
+
+def prior_offer_comparison_plan(message, state):
+    """Resolve an explicit cheapest-vs-fastest follow-up from the last offer search."""
+    normalized = strip_negated_write_phrases(message)
+    asks_tradeoff = (
+        "en ucuz" in normalized
+        and ("en hızlı" in normalized or "en hizli" in normalized)
+        and ("karşılaştır" in normalized or "karsilastir" in normalized)
+    )
+    if not asks_tradeoff or not state.last_reference_id:
+        return None
+
+    reference = state.references.get(state.last_reference_id)
+    if not isinstance(reference, dict) or reference.get("source_tool") != "search_offers":
+        return None
+    data = reference.get("data")
+    if not isinstance(data, dict) or not isinstance(data.get("offers"), list):
+        return None
+
+    return {
+        "type": "execution_plan",
+        "goal": "REASON",
+        "steps": [],
+        "context_sources": ["last_reference"],
+    }
 
 
 DB_PATH = os.getenv("LLM_CONVERSATIONS_DB", os.path.join(os.path.dirname(__file__), "conversations.db"))
@@ -271,7 +298,16 @@ class AgentApplication:
         names = {t.name for t in tools}
         cached = {k: v for k, v in {"last_cheapest_plan": state.last_cheapest_plan, "last_fastest_plan": state.last_fastest_plan}.items() if is_plan_valid(v)}
         system_prompt = get_execution_plan_prompt(tools, state.last_plan, state, cached)
-        raw = await self._generate([{"role": "system", "content": system_prompt}, *state.history, {"role": "user", "content": message}])
+        contextual_plan = prior_offer_comparison_plan(message, state)
+        raw = (
+            json.dumps(contextual_plan, ensure_ascii=False)
+            if contextual_plan is not None
+            else await self._generate([
+                {"role": "system", "content": system_prompt},
+                *state.history,
+                {"role": "user", "content": message},
+            ])
+        )
         repaired = False
         repair_summary = None
         try:
@@ -367,7 +403,14 @@ class AgentApplication:
                     received_step_id = step_id
 
         goal = plan.get("goal", "").upper()
-        if execution.get("success") and goal == "REASON" and last_tool == "search_offers":
+        if (
+            execution.get("success")
+            and goal == "REASON"
+            and last_tool is None
+            and plan.get("context_sources") == ["last_reference"]
+        ):
+            answer = format_offer_tradeoff(final)
+        elif execution.get("success") and goal == "REASON" and last_tool == "search_offers":
             # Teklif karşılaştırması tamamen yapısal tool verisinden üretilebilir.
             # İkinci bir model çağrısı hem gereksiz gecikme yaratıyor hem de bazı
             # Qwen sürümlerinde iç muhakemenin kullanıcı yanıtına sızmasına yol açıyor.
