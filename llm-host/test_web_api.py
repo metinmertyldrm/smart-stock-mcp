@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock, patch
 if importlib.util.find_spec("fastapi") is None:
     raise unittest.SkipTest("FastAPI optional dependency is not installed")
 
-from app import CachedProcurementPlan, ConversationState
+from app import CachedProcurementPlan, ConversationState, execute_plan
 from web_api import (AgentApplication, ChatRequest, ConversationStore, FALLBACK_PURPOSE,
                      TOOL_EXPLANATIONS, conversation_title, has_write_intent, now, safe_value)
 
@@ -185,6 +185,87 @@ class WebApiTest(unittest.TestCase):
         self.assertIn("En ucuz seçenek: ElectroShop — 37.350,00 TL", response["finalAnswer"])
         self.assertIn("En hızlı seçenek: FastDelivery — 1 gün", response["finalAnswer"])
         self.assertNotIn("Okay, let's", response["finalAnswer"])
+
+    def test_search_offers_result_is_saved_as_last_reference(self):
+        state = ConversationState()
+        client = AsyncMock()
+        client.call_tool.return_value = {
+            "success": True,
+            "offers": [{"id": 5}, {"id": 6}],
+            "hesaplanan_karsilastirma": {
+                "cheapestOfferId": 5,
+                "fastestOfferId": 6,
+            },
+        }
+        plan = {
+            "type": "execution_plan",
+            "goal": "REASON",
+            "steps": [{
+                "id": "step_1",
+                "tool": "search_offers",
+                "arguments": {"query": "Galaxy S24 256GB"},
+            }],
+        }
+
+        import asyncio
+        result = asyncio.run(execute_plan(plan, client, {"search_offers"}, state))
+
+        self.assertTrue(result["success"])
+        reference = state.references[state.last_reference_id]
+        self.assertEqual(reference["source_tool"], "search_offers")
+        self.assertEqual(reference["data"]["hesaplanan_karsilastirma"]["cheapestOfferId"], 5)
+
+    def test_offer_tradeoff_followup_uses_last_reference_without_llm_or_tool(self):
+        conversation = self.store.create("owner", "Teklif Karşılaştırma")
+        client = AsyncMock()
+        client.list_tools.return_value = []
+        llm = Mock()
+        agent = AgentApplication(client, llm, self.store)
+        state = agent.states.setdefault(conversation["id"], ConversationState())
+        state.last_reference_id = "ref_offers"
+        state.references["ref_offers"] = {
+            "type": "comparison_response",
+            "source_tool": "search_offers",
+            "created_at": now(),
+            "count": 1,
+            "data": {
+                "offers": [
+                    {
+                        "id": 5,
+                        "seller": {"name": "ElectroShop", "rating": 4.2},
+                        "totalCost": 37350,
+                        "deliveryTimeDays": 3,
+                    },
+                    {
+                        "id": 6,
+                        "seller": {"name": "FastDelivery", "rating": 3.9},
+                        "totalCost": 39500,
+                        "deliveryTimeDays": 1,
+                    },
+                ],
+                "hesaplanan_karsilastirma": {
+                    "cheapestOfferId": 5,
+                    "fastestOfferId": 6,
+                },
+            },
+        }
+
+        import asyncio
+        response = asyncio.run(agent.chat(
+            conversation["id"],
+            "En ucuz ve en hızlı planı karşılaştır.",
+            "owner",
+        ))
+
+        llm.generate.assert_not_called()
+        client.call_tool.assert_not_called()
+        self.assertTrue(response["succeeded"])
+        self.assertEqual(response["permissionLevel"], "PLAN")
+        self.assertEqual(response["trace"], [])
+        self.assertIn("En ucuz — ElectroShop", response["finalAnswer"])
+        self.assertIn("En hızlı — FastDelivery", response["finalAnswer"])
+        self.assertIn("2.150,00 TL daha pahalı", response["finalAnswer"])
+        self.assertIn("2 gün daha erken", response["finalAnswer"])
 
     def test_cached_plan_comparison_with_no_steps_returns_reasoned_answer(self):
         conversation = self.store.create("owner", "Karşılaştırma")
