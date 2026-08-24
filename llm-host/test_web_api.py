@@ -116,6 +116,76 @@ class WebApiTest(unittest.TestCase):
         self.assertEqual(response["permissionLevel"], "FULL")
         self.assertIsNone(response["pendingDraftId"])
 
+    def test_search_offers_uses_deterministic_turkish_answer(self):
+        conversation = self.store.create("owner", "Teklif Karşılaştırma")
+        client = AsyncMock()
+        client.list_tools.return_value = [SimpleNamespace(name="search_offers")]
+        llm = Mock()
+        llm.generate.return_value = (
+            '{"type":"execution_plan","goal":"REASON","steps":['
+            '{"id":"step_1","tool":"search_offers",'
+            '"arguments":{"query":"Galaxy S24 256GB"}}]}'
+        )
+        agent = AgentApplication(client, llm, self.store)
+        execution = {
+            "success": True,
+            "results": {
+                "step_1": {
+                    "offers": [
+                        {
+                            "id": 4,
+                            "product": {"name": "Galaxy S24 256GB", "sku": "SAM-GS24"},
+                            "seller": {"name": "TechStore", "rating": 4.8},
+                            "price": 38000,
+                            "shippingFee": 100,
+                            "totalCost": 38100,
+                            "deliveryTimeDays": 2,
+                        },
+                        {
+                            "id": 5,
+                            "product": {"name": "Galaxy S24 256GB", "sku": "SAM-GS24"},
+                            "seller": {"name": "ElectroShop", "rating": 4.2},
+                            "price": 37200,
+                            "shippingFee": 150,
+                            "totalCost": 37350,
+                            "deliveryTimeDays": 3,
+                        },
+                        {
+                            "id": 6,
+                            "product": {"name": "Galaxy S24 256GB", "sku": "SAM-GS24"},
+                            "seller": {"name": "FastDelivery", "rating": 3.9},
+                            "price": 39500,
+                            "shippingFee": 0,
+                            "totalCost": 39500,
+                            "deliveryTimeDays": 1,
+                        },
+                    ],
+                    "hesaplanan_karsilastirma": {
+                        "quantity": 1,
+                        "cheapestOfferId": 5,
+                        "fastestOfferId": 6,
+                    },
+                }
+            },
+            "last_result": {},
+        }
+        execution["last_result"] = execution["results"]["step_1"]
+
+        with patch("web_api.execute_plan", new=AsyncMock(return_value=execution)):
+            import asyncio
+            response = asyncio.run(agent.chat(
+                conversation["id"],
+                "Galaxy S24 256GB tekliflerini karşılaştır. Henüz sipariş oluşturma.",
+                "owner",
+            ))
+
+        self.assertEqual(llm.generate.call_count, 1)
+        self.assertIn("Marketplace Teklifleri", response["finalAnswer"])
+        self.assertIn("Toplam Maliyet: 37.350,00 TL", response["finalAnswer"])
+        self.assertIn("En ucuz seçenek: ElectroShop — 37.350,00 TL", response["finalAnswer"])
+        self.assertIn("En hızlı seçenek: FastDelivery — 1 gün", response["finalAnswer"])
+        self.assertNotIn("Okay, let's", response["finalAnswer"])
+
     def test_cached_plan_comparison_with_no_steps_returns_reasoned_answer(self):
         conversation = self.store.create("owner", "Karşılaştırma")
         client = AsyncMock()
