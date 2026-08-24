@@ -355,6 +355,19 @@ class AgentApplication:
                 return self.clarification_response(conversation_id, message, permission, state, exc)
             repaired = True
             repair_summary = "Model planı doğrulanamadığı için güvenli ve çalıştırılabilir bir planla değiştirildi."
+
+        # Marketplace fiyatları değişebilir. Model geçerli ama toolsuz bir CHAT/REASON
+        # planı üretse bile açık bir cheapest-vs-fastest takibinde MCP verisini yenile.
+        refresh_plan = prior_offer_refresh_plan(message, state)
+        if refresh_plan is not None and not any(
+            step.get("tool") == "search_offers" for step in plan.get("steps", [])
+        ):
+            plan = refresh_plan
+            repaired = True
+            repair_summary = (
+                "Güncel marketplace verisi gerektiği için plan search_offers çağrısıyla yenilendi."
+            )
+
         if permission == "PLAN" and any(s.get("tool") in WRITE_TOOLS for s in plan.get("steps", [])):
             raise HTTPException(403, "Salt okunur istekte yazma işlemi engellendi.")
         self.store.add_message(conversation_id, "user", message)
