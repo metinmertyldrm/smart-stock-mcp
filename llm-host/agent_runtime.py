@@ -1413,8 +1413,39 @@ def format_final_answer(answer, source_tool: str | None = None) -> str:
             if not offers:
                 lines.append("Teklif bulunamadı.")
             else:
-                lines.append("Teklifler:")
+                comparison = answer.get("hesaplanan_karsilastirma") or {}
+                cheapest_id = comparison.get("cheapestOfferId")
+                fastest_id = comparison.get("fastestOfferId")
+
+                def offer_value(offer, *keys):
+                    for key in keys:
+                        value = offer.get(key)
+                        if value is not None:
+                            return value
+                    return None
+
+                def format_tl(value):
+                    try:
+                        formatted = f"{float(value):,.2f}"
+                        return formatted.replace(",", "_").replace(".", ",").replace("_", ".")
+                    except (TypeError, ValueError):
+                        return str(value)
+
+                def seller_details(offer):
+                    seller = offer.get("seller")
+                    if isinstance(seller, dict):
+                        return seller.get("name") or "Bilinmeyen Satıcı", seller.get("rating")
+                    return (
+                        offer_value(offer, "sellerName", "seller_name") or "Bilinmeyen Satıcı",
+                        offer_value(offer, "sellerRating", "rating"),
+                    )
+
+                lines.append("Marketplace Teklifleri:")
+                offers_by_id = {}
                 for idx, offer in enumerate(offers, 1):
+                    offer_id = offer_value(offer, "id", "offerId", "offer_id")
+                    offers_by_id[offer_id] = offer
+
                     prod = offer.get("product")
                     if isinstance(prod, dict):
                         p_name = prod.get("name") or "Bilinmeyen Ürün"
@@ -1422,33 +1453,52 @@ def format_final_answer(answer, source_tool: str | None = None) -> str:
                     else:
                         p_name = offer.get("productName") or "Bilinmeyen Ürün"
                         sku = offer.get("productSku")
-                    
+
+                    labels = []
+                    if offer_id == cheapest_id:
+                        labels.append("EN UCUZ")
+                    if offer_id == fastest_id:
+                        labels.append("EN HIZLI")
+                    label_text = f" — {', '.join(labels)}" if labels else ""
                     sku_str = f" (SKU: {sku})" if sku else ""
-                    
-                    seller_info = offer.get("seller")
-                    if isinstance(seller_info, dict):
-                        s_name = seller_info.get("name") or "Bilinmeyen Satıcı"
-                        rating = seller_info.get("rating")
-                    else:
-                        s_name = offer.get("seller_name") or "Bilinmeyen Satıcı"
-                        rating = offer.get("rating")
-                    
-                    price = offer.get("price") or offer.get("unit_price")
-                    shipping = offer.get("shippingFee") or offer.get("shipping_cost")
-                    stock = offer.get("stockQuantity") or offer.get("available_stock")
-                    del_days = offer.get("deliveryTimeDays") or offer.get("delivery_days")
-                    
-                    lines.append(f"  {idx}. {p_name}{sku_str}")
-                    lines.append(f"     Satıcı: {s_name}" + (f" (Puan: {rating}/5)" if rating is not None else ""))
+
+                    seller_name, rating = seller_details(offer)
+                    price = offer_value(offer, "price", "unitPrice", "unit_price")
+                    shipping = offer_value(offer, "shippingFee", "shippingCost", "shipping_cost")
+                    total = offer_value(offer, "totalCost", "total_cost")
+                    if total is None and price is not None and shipping is not None:
+                        total = float(price) + float(shipping)
+                    delivery_days = offer_value(
+                        offer, "deliveryTimeDays", "deliveryDays", "delivery_days"
+                    )
+
+                    lines.append(f"  {idx}. {p_name}{sku_str}{label_text}")
+                    lines.append(f"     Satıcı: {seller_name}")
                     if price is not None:
-                        lines.append(f"     Birim Fiyat: {price} TL")
+                        lines.append(f"     Birim Fiyat: {format_tl(price)} TL")
                     if shipping is not None:
-                        lines.append(f"     Kargo Ücreti: {shipping} TL")
-                    if stock is not None:
-                        lines.append(f"     Stok Miktarı: {stock}")
-                    if del_days is not None:
-                        lines.append(f"     Teslimat Süresi: {del_days} gün")
+                        lines.append(f"     Kargo Ücreti: {format_tl(shipping)} TL")
+                    if total is not None:
+                        lines.append(f"     Toplam Maliyet: {format_tl(total)} TL")
+                    if delivery_days is not None:
+                        lines.append(f"     Teslimat Süresi: {delivery_days} gün")
+                    if rating is not None:
+                        lines.append(f"     Satıcı Puanı: {rating}/5")
                     lines.append("")
+
+                cheapest = offers_by_id.get(cheapest_id)
+                if cheapest:
+                    seller_name, _ = seller_details(cheapest)
+                    total = offer_value(cheapest, "totalCost", "total_cost")
+                    lines.append(f"En ucuz seçenek: {seller_name} — {format_tl(total)} TL")
+
+                fastest = offers_by_id.get(fastest_id)
+                if fastest:
+                    seller_name, _ = seller_details(fastest)
+                    delivery_days = offer_value(
+                        fastest, "deliveryTimeDays", "deliveryDays", "delivery_days"
+                    )
+                    lines.append(f"En hızlı seçenek: {seller_name} — {delivery_days} gün")
 
         # 5. Handle order status (get_order_status)
         order_status = answer.get("status")
