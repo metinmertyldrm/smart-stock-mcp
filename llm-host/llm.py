@@ -285,12 +285,16 @@ class LLMService:
         if self.connect_timeout <= 0 or self.read_timeout <= 0:
             raise ValueError("OLLAMA_CONNECT_TIMEOUT and OLLAMA_READ_TIMEOUT must be positive")
 
-    def generate(self, messages, json_mode=False, allow_fast_route=True):
+    def generate(self, messages, json_mode=False, allow_fast_route=True, num_predict=None):
         if allow_fast_route:
             messages, fast_route = prepare_inference_messages(messages)
             if fast_route:
                 print(f"[LLM] deterministic planner bypass: {fast_route} (Ollama skipped)")
                 return _fast_execution_plan(fast_route)
+
+        prediction_limit = self.num_predict if num_predict is None else int(num_predict)
+        if prediction_limit <= 0:
+            raise ValueError("num_predict must be positive")
 
         prompt_parts = []
         for message in messages:
@@ -314,7 +318,7 @@ class LLMService:
             "stream": False,
             "think": False,
             "options": {
-                "num_predict": self.num_predict,
+                "num_predict": prediction_limit,
                 "num_ctx": self.num_ctx
             }
         }
@@ -347,7 +351,7 @@ class LLMService:
         if prompt_tokens is not None:
             print(
                 f"[LLM] prompt {prompt_tokens} token / num_ctx {self.num_ctx} | "
-                f"cikti {data.get('eval_count')} token / num_predict {self.num_predict}"
+                f"cikti {data.get('eval_count')} token / num_predict {prediction_limit}"
             )
             if prompt_tokens >= self.num_ctx:
                 print(
