@@ -106,7 +106,7 @@ def budget_replenishment_plan(message):
         return None
 
     match = re.search(
-        r"(?<!\\d)(\\d{1,3}(?:[.\\s]\\d{3})+|\\d+)(?:,\\d{1,2})?\\s*(?:TL|₺)",
+        r"(?<!\d)(\d{1,3}(?:[.\s]\d{3})+|\d+)(?:,\d{1,2})?\s*(?:TL|₺)",
         message,
         re.IGNORECASE,
     )
