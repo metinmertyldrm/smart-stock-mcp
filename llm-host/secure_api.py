@@ -3,11 +3,13 @@
 `web_api` keeps the orchestration implementation and its internal server-owned
 identity contract. This deployable ASGI entry point supports two modes:
 
-- ``anonymous`` for deterministic development/backward compatibility,
-- ``local`` for TASK 10 stable user identity and role-based authorization.
+- ``anonymous`` for deterministic development/backward compatibility using an
+  opaque bearer session;
+- ``local`` for stable user identity and RBAC using an HttpOnly browser session
+  cookie plus CSRF protection for state-changing requests.
 
-In both modes caller-supplied owner/role headers are discarded before the
-request reaches ``web_api``.
+In both modes caller-supplied owner/role headers and browser credentials are
+discarded before the request reaches ``web_api``.
 """
 from __future__ import annotations
 
@@ -22,6 +24,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
+from browser_security import (
+    CSRF_HEADER_NAME,
+    clear_local_auth_cookies,
+    configured_login_limiter,
+    cookie_session_token,
+    csrf_proof,
+    set_local_auth_cookies,
+)
 from identity import IdentityError, IdentityStore, ROLE_VIEWER
 from observability import (
     correlate_response_payload,
@@ -34,7 +44,7 @@ from observability import (
     set_request_id,
 )
 from rbac import reset_current_role, set_current_role
-from security import DEFAULT_SESSION_DB, SessionError, SessionStore
+from security import CsrfError, DEFAULT_SESSION_DB, SessionError, SessionStore
 from web_api import app
 
 
@@ -51,9 +61,11 @@ PUBLIC_PATHS = {
     "/api/auth/config",
     "/api/auth/login",
 }
+MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 CHAT_ROUTES = {"/api/chat", "/api/conversations/{conversation_id}/confirm"}
 sessions = SessionStore(SESSION_PATH)
 identities = IdentityStore(IDENTITY_PATH)
+login_limiter = configured_login_limiter()
 if AUTH_MODE == "local":
     identities.bootstrap_admin(
         os.getenv("LLM_BOOTSTRAP_ADMIN_USERNAME"),
@@ -86,7 +98,14 @@ def authenticated_headers(
         (name, value)
         for name, value in raw_headers
         if name.lower()
-        not in {b"authorization", b"x-client-id", b"x-client-role", b"x-client-capabilities"}
+        not in {
+            b"authorization",
+            b"cookie",
+            b"x-csrf-token",
+            b"x-client-id",
+            b"x-client-role",
+            b"x-client-capabilities",
+        }
     ]
     filtered.append((b"x-client-id", owner_id.encode("utf-8")))
     if role:
@@ -110,6 +129,10 @@ def require_capability(request: Request, capability: str):
 
 def is_confirmation_path(path: str) -> bool:
     return path.startswith("/api/conversations/") and path.endswith("/confirm")
+
+
+def _client_source(request: Request) -> str | None:
+    return request.client.host if request.client is not None else None
 
 
 async def correlate_chat_response(response, request_id: str, identity=None):
@@ -153,7 +176,6 @@ async def correlate_chat_response(response, request_id: str, identity=None):
         try:
             persist_correlated_chat_response(payload, getattr(app.state.agent, "store", None))
         except Exception as exc:
-            # Correlation persistence is observability-only; never fail a valid chat.
             emit_event(
                 "chat.correlation.persistence_failed",
                 level=logging.WARNING,
@@ -170,7 +192,11 @@ async def correlate_chat_response(response, request_id: str, identity=None):
 
 @app.get("/api/auth/config")
 async def auth_config():
-    return {"mode": AUTH_MODE}
+    return {
+        "mode": AUTH_MODE,
+        "sessionTransport": "cookie" if AUTH_MODE == "local" else "bearer",
+        "csrfHeader": CSRF_HEADER_NAME if AUTH_MODE == "local" else None,
+    }
 
 
 @app.post("/api/session", status_code=201)
@@ -185,20 +211,56 @@ async def create_session():
 
 
 @app.post("/api/auth/login")
-async def login(body: LoginRequest):
+async def login(body: LoginRequest, request: Request):
     if AUTH_MODE != "local":
         raise HTTPException(404, "Kullanıcı girişi bu ortamda etkin değil.")
+
+    source = _client_source(request)
+    retry_after = login_limiter.retry_after(source, body.username)
+    if retry_after:
+        emit_event("security.login.rate_limited", level=logging.WARNING)
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Çok fazla başarısız giriş denemesi. Daha sonra tekrar deneyin."},
+            headers={"Retry-After": str(retry_after), "Cache-Control": "no-store"},
+        )
+
     try:
         identity = identities.authenticate(body.username, body.password)
     except IdentityError:
+        retry_after = login_limiter.record_failure(source, body.username)
         emit_event("security.login.rejected", level=logging.WARNING)
+        if retry_after:
+            emit_event("security.login.rate_limited", level=logging.WARNING)
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Çok fazla başarısız giriş denemesi. Daha sonra tekrar deneyin."},
+                headers={"Retry-After": str(retry_after), "Cache-Control": "no-store"},
+            )
         raise HTTPException(401, "Kullanıcı adı veya parola hatalı.") from None
-    session = sessions.create(user_id=identity.id)
+
+    login_limiter.record_success(source, body.username)
+    old_token = cookie_session_token(request)
+    if old_token:
+        try:
+            sessions.revoke_token(old_token)
+        except SessionError:
+            pass
+
+    session = sessions.create(user_id=identity.id, with_csrf=True)
     emit_event("security.login.succeeded", role=identity.role)
-    return JSONResponse(
-        content={**session, "user": identity.public_dict()},
+    response = JSONResponse(
+        content={"expiresAt": session["expiresAt"], "user": identity.public_dict()},
         headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
     )
+    set_local_auth_cookies(
+        response,
+        request,
+        session_token=session["token"],
+        csrf_token=session["csrfToken"],
+        max_age=sessions.ttl_seconds,
+    )
+    return response
 
 
 @app.get("/api/auth/me")
@@ -209,9 +271,16 @@ async def me(request: Request):
 
 @app.post("/api/auth/logout", status_code=204)
 async def logout(request: Request):
-    authorization = getattr(request.state, "authorization", None)
-    sessions.revoke(authorization)
-    return Response(status_code=204, headers={"Cache-Control": "no-store"})
+    if AUTH_MODE == "local":
+        session_token = getattr(request.state, "session_token", None)
+        sessions.revoke_token(session_token)
+    else:
+        authorization = getattr(request.state, "authorization", None)
+        sessions.revoke(authorization)
+    response = Response(status_code=204, headers={"Cache-Control": "no-store"})
+    if AUTH_MODE == "local":
+        clear_local_auth_cookies(response, request)
+    return response
 
 
 @app.get("/api/admin/users")
@@ -271,11 +340,18 @@ async def require_session(request: Request, call_next):
     if request.method == "OPTIONS" or request.url.path in PUBLIC_PATHS:
         return await call_next(request)
 
-    authorization = request.headers.get("authorization")
     role_token = None
+    identity = None
+    authorization = None
+    session_token = None
     try:
-        principal = sessions.principal_for_authorization(authorization)
-        identity = None
+        if AUTH_MODE == "local":
+            session_token = cookie_session_token(request)
+            principal = sessions.principal_for_token(session_token)
+        else:
+            authorization = request.headers.get("authorization")
+            principal = sessions.principal_for_authorization(authorization)
+
         if AUTH_MODE == "local":
             if principal.user_id is None:
                 raise SessionError("Anonymous session is not a user session")
@@ -300,11 +376,34 @@ async def require_session(request: Request, call_next):
             method=request.method,
             route=normalize_route(request.url.path),
         )
+        headers = {"Cache-Control": "no-store"}
+        if AUTH_MODE == "anonymous":
+            headers["WWW-Authenticate"] = "Bearer"
         return JSONResponse(
             status_code=401,
             content={"detail": "Geçerli bir oturum gerekli."},
-            headers={"WWW-Authenticate": "Bearer", "Cache-Control": "no-store"},
+            headers=headers,
         )
+
+    if AUTH_MODE == "local" and request.method in MUTATING_METHODS:
+        proof = csrf_proof(request)
+        try:
+            if proof is None:
+                raise CsrfError("Missing or mismatched CSRF proof")
+            sessions.validate_csrf(session_token, proof)
+        except (CsrfError, SessionError):
+            emit_event(
+                "security.csrf.rejected",
+                level=logging.WARNING,
+                method=request.method,
+                route=normalize_route(request.url.path),
+                role=identity.role,
+            )
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "CSRF doğrulaması başarısız."},
+                headers={"Cache-Control": "no-store"},
+            )
 
     if AUTH_MODE == "local" and is_confirmation_path(request.url.path) and not identity.has("confirm"):
         emit_event(
@@ -322,6 +421,7 @@ async def require_session(request: Request, call_next):
         )
 
     request.state.authorization = authorization
+    request.state.session_token = session_token
     request.scope["headers"] = authenticated_headers(
         list(request.scope.get("headers", [])), owner_id, role
     )
@@ -375,8 +475,6 @@ async def observe_request(request: Request, call_next):
         reset_request_id(token)
 
 
-# `web_api` already has a restrictive CORS layer for direct/internal tests. The
-# deployable wrapper adds the Authorization header to browser preflight policy.
 origins = [
     value.strip()
     for value in os.getenv("LLM_CORS_ALLOWED_ORIGINS", "http://localhost:5173").split(",")
@@ -385,7 +483,8 @@ origins = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
+    allow_credentials=True,
     allow_methods=["GET", "POST", "DELETE"],
-    allow_headers=["Content-Type", "Authorization"],
+    allow_headers=["Content-Type", "Authorization", CSRF_HEADER_NAME],
     expose_headers=["X-Request-Id"],
 )
