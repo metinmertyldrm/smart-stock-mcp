@@ -22,7 +22,7 @@ class FastReadOnlyPlannerRoutingTest(unittest.TestCase):
         self.assertIn('"tool":"list_out_of_stock"', prepared[0]["content"])
         self.assertNotIn("create_purchase_draft", prepared[0]["content"])
 
-    def test_zero_stock_quantity_phrase_with_no-order_guard_uses_fast_route(self):
+    def test_zero_stock_quantity_phrase_with_no_order_guard_uses_fast_route(self):
         prepared, tool = prepare_inference_messages([
             {"role": "system", "content": FULL_SYSTEM},
             {
