@@ -29,7 +29,31 @@ WRITE_TOOLS = {"create_purchase_draft", "place_order", "create_incoming_order",
                "create_incoming_orders", "receive_order", "receive_orders"}
 WRITE_INTENT_WORDS = ("sipariş", "taslak", "satın al", "oluştur", "place", "draft", "order",
                       "stoğa al", "stoga al", "teslim al", "receive")
+NEGATED_WRITE_PHRASES = (
+    "henüz sipariş oluşturma",
+    "henuz siparis olusturma",
+    "henüz taslak veya sipariş oluşturma",
+    "henuz taslak veya siparis olusturma",
+    "henüz taslak ya da sipariş oluşturma",
+    "henuz taslak ya da siparis olusturma",
+    "do not create an order",
+    "do not place an order",
+)
 CONFIRM_INTENT_WORDS = ("evet", "onay", "onayla", "onaylıyorum", "devam", "tamam", "yes", "confirm")
+
+
+def strip_negated_write_phrases(message):
+    normalized = (message or "").casefold()
+    for phrase in NEGATED_WRITE_PHRASES:
+        normalized = normalized.replace(phrase, "")
+    return normalized
+
+
+def has_write_intent(message):
+    normalized = strip_negated_write_phrases(message)
+    return any(word in normalized for word in WRITE_INTENT_WORDS)
+
+
 DB_PATH = os.getenv("LLM_CONVERSATIONS_DB", os.path.join(os.path.dirname(__file__), "conversations.db"))
 # Gecmis promptun icine giriyor; num_ctx tasmasin diye hem adet hem uzunluk sinirli.
 HISTORY_MESSAGES = int(os.getenv("LLM_HISTORY_MESSAGES", "8"))
@@ -45,7 +69,7 @@ TITLE_STOP_WORDS = {
 def conversation_title(message):
     """Produce a compact, deterministic title when no title model is available."""
     clean = re.sub(r"[\r\n\t]+", " ", message).strip(" .,:;!?-—")
-    lowered = clean.casefold()
+    lowered = strip_negated_write_phrases(clean)
     budget = re.search(r"\b[\d.]+(?:,[\d]+)?\s*(?:TL|₺)\b", clean, re.IGNORECASE)
     if budget:
         return f"{budget.group(0)} Bütçeli Satın Alma"
@@ -238,8 +262,8 @@ class AgentApplication:
             state.pending_draft_id = self.store.pending_draft(conversation_id)
         state.history = self.store.history(conversation_id)
         state.last_user_message = message
-        normalized = message.casefold()
-        write_intent = any(word in normalized for word in WRITE_INTENT_WORDS)
+        normalized = strip_negated_write_phrases(message)
+        write_intent = has_write_intent(message)
         awaiting_confirmation = state.pending_draft_id is not None or bool(state.pending_receive_ids)
         confirm_intent = awaiting_confirmation and any(word in normalized for word in CONFIRM_INTENT_WORDS)
         permission = "FULL" if write_intent or confirm_intent else "PLAN"
