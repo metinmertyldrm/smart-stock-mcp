@@ -1110,7 +1110,11 @@ async def execute_plan(plan: dict, client: MCPClient, available_tool_names: set[
     # also avoids indexing an empty steps list when the plan completes.
     declared_sources = plan.get("context_sources") or []
     for source in declared_sources:
-        value = getattr(state, source, None) if state is not None else None
+        if source == "last_reference" and state is not None:
+            reference = state.references.get(state.last_reference_id) if state.last_reference_id else None
+            value = reference.get("data") if isinstance(reference, dict) else None
+        else:
+            value = getattr(state, source, None) if state is not None else None
         if value is not None:
             execution_results[source] = serialize_plan(value)
 
@@ -1245,7 +1249,7 @@ async def execute_plan(plan: dict, client: MCPClient, available_tool_names: set[
                             }
                 elif tool_name == "create_procurement_plan":
                     save_reference(state, "procurement_plan", tool_name, result_data)
-                elif tool_name == "compare_offers":
+                elif tool_name in {"compare_offers", "search_offers"}:
                     save_reference(state, "comparison_response", tool_name, result_data)
 
         except Exception as exc:
@@ -1261,10 +1265,15 @@ async def execute_plan(plan: dict, client: MCPClient, available_tool_names: set[
 
     steps = plan.get("steps", [])
     if not steps:
+        last_result = (
+            next(iter(execution_results.values()))
+            if len(execution_results) == 1
+            else execution_results
+        )
         return {
             "success": True,
             "results": execution_results,
-            "last_result": execution_results,
+            "last_result": last_result,
             "durations_ms": step_durations,
         }
 
@@ -1612,6 +1621,101 @@ def format_final_answer(answer, source_tool: str | None = None) -> str:
         return "\n".join(lines)
     else:
         return str(answer)
+
+
+
+def format_offer_tradeoff(answer: dict) -> str:
+    """Compare the cheapest and fastest rows from a prior search_offers result."""
+    if not isinstance(answer, dict):
+        return format_final_answer(answer, "search_offers")
+
+    offers = answer.get("offers") or []
+    comparison = answer.get("hesaplanan_karsilastirma") or {}
+    cheapest_id = comparison.get("cheapestOfferId")
+    fastest_id = comparison.get("fastestOfferId")
+    by_id = {
+        offer.get("id") or offer.get("offerId") or offer.get("offer_id"): offer
+        for offer in offers
+        if isinstance(offer, dict)
+    }
+    cheapest = by_id.get(cheapest_id)
+    fastest = by_id.get(fastest_id)
+    if not cheapest or not fastest:
+        return format_final_answer(answer, "search_offers")
+
+    def value(offer, *keys):
+        for key in keys:
+            candidate = offer.get(key)
+            if candidate is not None:
+                return candidate
+        return None
+
+    def seller(offer):
+        details = offer.get("seller")
+        if isinstance(details, dict):
+            return details.get("name") or "Bilinmeyen Satıcı", details.get("rating")
+        return (
+            value(offer, "sellerName", "seller_name") or "Bilinmeyen Satıcı",
+            value(offer, "sellerRating", "rating"),
+        )
+
+    def money(amount):
+        formatted = f"{float(amount):,.2f}"
+        return formatted.replace(",", "_").replace(".", ",").replace("_", ".")
+
+    cheap_name, cheap_rating = seller(cheapest)
+    fast_name, fast_rating = seller(fastest)
+    cheap_total = float(value(cheapest, "totalCost", "total_cost"))
+    fast_total = float(value(fastest, "totalCost", "total_cost"))
+    cheap_days = int(value(cheapest, "deliveryTimeDays", "deliveryDays", "delivery_days"))
+    fast_days = int(value(fastest, "deliveryTimeDays", "deliveryDays", "delivery_days"))
+
+    if cheapest_id == fastest_id:
+        return (
+            f"En ucuz ve en hızlı seçenek aynı teklif: {cheap_name}.\n"
+            f"Toplam maliyet: {money(cheap_total)} TL\n"
+            f"Teslimat süresi: {cheap_days} gün\n"
+            f"Satıcı puanı: {cheap_rating}/5"
+        )
+
+    cost_difference = fast_total - cheap_total
+    day_difference = cheap_days - fast_days
+    rating_difference = (
+        float(cheap_rating) - float(fast_rating)
+        if cheap_rating is not None and fast_rating is not None
+        else None
+    )
+
+    lines = [
+        "En ucuz ve en hızlı seçenek karşılaştırması:",
+        "",
+        f"En ucuz — {cheap_name}",
+        f"  Toplam maliyet: {money(cheap_total)} TL",
+        f"  Teslimat süresi: {cheap_days} gün",
+        f"  Satıcı puanı: {cheap_rating}/5",
+        "",
+        f"En hızlı — {fast_name}",
+        f"  Toplam maliyet: {money(fast_total)} TL",
+        f"  Teslimat süresi: {fast_days} gün",
+        f"  Satıcı puanı: {fast_rating}/5",
+        "",
+        (
+            f"Fark: En hızlı seçenek {money(abs(cost_difference))} TL daha pahalı "
+            f"ve {abs(day_difference)} gün daha erken teslim ediliyor."
+        ),
+    ]
+    if rating_difference is not None:
+        lines.append(
+            f"Satıcı puanı farkı: En ucuz seçeneğin puanı {abs(rating_difference):g} puan daha yüksek."
+            if rating_difference > 0
+            else f"Satıcı puanı farkı: En hızlı seçeneğin puanı {abs(rating_difference):g} puan daha yüksek."
+            if rating_difference < 0
+            else "Satıcı puanları eşit."
+        )
+    lines.append(
+        f"Karar: Maliyet önceliğinizse {cheap_name}; teslimat hızı önceliğinizse {fast_name}."
+    )
+    return "\n".join(lines)
 
 
 
