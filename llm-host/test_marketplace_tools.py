@@ -88,6 +88,53 @@ class ItemValidationTest(unittest.TestCase):
         self.assertIn("No items provided", result["error"])
 
 
+class SearchOffersComparisonTest(unittest.TestCase):
+    def test_search_offers_returns_totals_and_best_offer_ids(self):
+        class FakeOffer:
+            def __init__(self, offer_id, price, shipping, days, rating):
+                self.id = offer_id
+                self.price = price
+                self.shippingFee = shipping
+                self.deliveryTimeDays = days
+                self.stockQuantity = 10
+                self.seller = types.SimpleNamespace(name=f"Seller {offer_id}", rating=rating)
+
+            def model_dump(self):
+                return {
+                    "id": self.id,
+                    "price": self.price,
+                    "shippingFee": self.shippingFee,
+                    "deliveryTimeDays": self.deliveryTimeDays,
+                    "stockQuantity": self.stockQuantity,
+                    "seller": {
+                        "name": self.seller.name,
+                        "rating": self.seller.rating,
+                    },
+                }
+
+        class FakeOfferService:
+            async def search_offers(self, query):
+                return [
+                    FakeOffer(1, 100.0, 20.0, 2, 4.8),
+                    FakeOffer(2, 90.0, 5.0, 3, 4.2),
+                    FakeOffer(3, 110.0, 0.0, 1, 3.9),
+                ]
+
+        previous = tools.service
+        tools.service = FakeOfferService()
+        try:
+            result = call("search_offers", {"query": "Galaxy S24"})
+        finally:
+            tools.service = previous
+
+        self.assertTrue(result["success"])
+        self.assertEqual([120.0, 95.0, 110.0], [
+            offer["totalCost"] for offer in result["offers"]
+        ])
+        self.assertEqual(2, result["hesaplanan_karsilastirma"]["cheapestOfferId"])
+        self.assertEqual(3, result["hesaplanan_karsilastirma"]["fastestOfferId"])
+
+
 class FilterValidationTest(unittest.TestCase):
     """Regresyon: 'filters' string gelince ham 'str object has no attribute get' patlıyordu.
 
