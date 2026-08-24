@@ -94,6 +94,53 @@ def prior_offer_refresh_plan(message, state):
     }
 
 
+def budget_replenishment_plan(message):
+    """Build a safe all-products replenishment plan for an explicit total budget."""
+    normalized = strip_negated_write_phrases(message)
+    scope_requested = (
+        ("eksik ürün" in normalized or "eksik urun" in normalized)
+        and ("tamamla" in normalized or "planla" in normalized)
+        and ("bütçe" in normalized or "butce" in normalized)
+    )
+    if not scope_requested:
+        return None
+
+    match = re.search(
+        r"(?<!\\d)(\\d{1,3}(?:[.\\s]\\d{3})+|\\d+)(?:,\\d{1,2})?\\s*(?:TL|₺)",
+        message,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    budget = float(match.group(1).replace(".", "").replace(" ", ""))
+    if budget <= 0:
+        return None
+
+    return {
+        "type": "execution_plan",
+        "goal": "PLAN",
+        "steps": [
+            {
+                "id": "step_1",
+                "tool": "calculate_replenishment",
+                "arguments": {},
+            },
+            {
+                "id": "step_2",
+                "tool": "create_procurement_plan",
+                "arguments": {
+                    "items": {
+                        "$from": "step_1.replenishments",
+                        "$transform": "replenishments_to_items",
+                    },
+                    "objective": "CHEAPEST",
+                    "filters": {"max_total_budget": budget},
+                },
+            },
+        ],
+    }
+
+
 def structured_answer(raw, fallback):
     """Read only the public answer field from Ollama's JSON response."""
     try:
@@ -297,13 +344,14 @@ class AgentApplication:
         self.store = store or ConversationStore()
         self.states = {}
 
-    async def _generate(self, messages, *, json_mode=False):
+    async def _generate(self, messages, *, json_mode=False, num_predict=None):
         """Run Ollama outside the event loop and never bypass it for web requests."""
         return await asyncio.to_thread(
             self.llm.generate,
             messages,
             json_mode=json_mode,
             allow_fast_route=False,
+            num_predict=num_predict,
         )
 
     async def chat(self, conversation_id, message, owner_id="anonymous"):
@@ -366,6 +414,19 @@ class AgentApplication:
             repaired = True
             repair_summary = (
                 "Güncel marketplace verisi gerektiği için plan search_offers çağrısıyla yenilendi."
+            )
+
+        # A total-budget replenishment request targets the complete shortage list.
+        # Optional product_id values must never be guessed by the model; retrieve the
+        # authoritative IDs and quantities from stock MCP, then apply the cap once to
+        # the complete marketplace plan.
+        safe_budget_plan = budget_replenishment_plan(message)
+        if safe_budget_plan is not None and plan != safe_budget_plan:
+            plan = safe_budget_plan
+            repaired = True
+            repair_summary = (
+                "Toplam bütçeli eksik stok isteği, ürün kimliği uydurulmadan tüm "
+                "replenishment verisini kullanan güvenli planla doğrulandı."
             )
 
         if permission == "PLAN" and any(s.get("tool") in WRITE_TOOLS for s in plan.get("steps", [])):
@@ -456,6 +517,7 @@ class AgentApplication:
             raw_answer = await self._generate(
                 [{"role": "system", "content": get_reasoning_prompt(message, reasoning_data)}],
                 json_mode=True,
+                num_predict=512,
             )
             fallback = (
                 format_final_answer(final, last_tool)
