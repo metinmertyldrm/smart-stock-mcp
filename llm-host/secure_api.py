@@ -25,6 +25,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from browser_security import (
+    CSRF_COOKIE_NAME,
     CSRF_HEADER_NAME,
     clear_local_auth_cookies,
     configured_login_limiter,
@@ -196,6 +197,7 @@ async def auth_config():
         "mode": AUTH_MODE,
         "sessionTransport": "cookie" if AUTH_MODE == "local" else "bearer",
         "csrfHeader": CSRF_HEADER_NAME if AUTH_MODE == "local" else None,
+        "csrfCookie": CSRF_COOKIE_NAME if AUTH_MODE == "local" else None,
     }
 
 
@@ -347,7 +349,7 @@ async def require_session(request: Request, call_next):
     try:
         if AUTH_MODE == "local":
             session_token = cookie_session_token(request)
-            principal = sessions.principal_for_token(session_token)
+            principal = sessions.principal_for_cookie(session_token)
         else:
             authorization = request.headers.get("authorization")
             principal = sessions.principal_for_authorization(authorization)
