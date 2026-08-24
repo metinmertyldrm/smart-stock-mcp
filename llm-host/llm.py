@@ -26,9 +26,17 @@ FAST_INFO_BLOCKERS = (
     "cheapest",
     "fastest",
 )
+READ_ONLY_NEGATIONS = (
+    "henuz siparis olusturma",
+    "do not create an order",
+    "do not place an order",
+)
 OUT_OF_STOCK_TERMS = (
     "stokta olmayan",
     "stok yok",
+    "stok miktari sifir",
+    "stoku sifir",
+    "sifir stok",
     "tukenen",
     "tukenmis",
     "out of stock",
@@ -79,7 +87,10 @@ def _normalize_for_route(text):
 def _fast_read_only_tool(user_message):
     """Return a safe single read tool for unambiguous stock-state retrievals."""
     normalized = _normalize_for_route(user_message)
-    if any(term in normalized for term in FAST_INFO_BLOCKERS):
+    blocker_text = normalized
+    for phrase in READ_ONLY_NEGATIONS:
+        blocker_text = blocker_text.replace(phrase, "")
+    if any(term in blocker_text for term in FAST_INFO_BLOCKERS):
         return None
     if any(term in normalized for term in OUT_OF_STOCK_TERMS):
         return "list_out_of_stock"
@@ -220,7 +231,7 @@ class LLMService:
         # Ollama varsayilan num_ctx degeri sistem promptumuzdan kucuk olabilir.
         # Asildiginda prompt BASTAN kesilir; ilk kesilen bolum AVAILABLE TOOLS olur.
         self.num_ctx = int(os.getenv("OLLAMA_NUM_CTX", "8192"))
-        self.num_predict = int(os.getenv("OLLAMA_NUM_PREDICT", "1024"))
+        self.num_predict = int(os.getenv("OLLAMA_NUM_PREDICT", "256"))
         # Keep network limits configurable, but do not hide prompt/model performance
         # problems behind ever-growing defaults. Slower environments can override them.
         self.connect_timeout = float(os.getenv("OLLAMA_CONNECT_TIMEOUT", "20"))
