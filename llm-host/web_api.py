@@ -367,7 +367,12 @@ class AgentApplication:
                     received_step_id = step_id
 
         goal = plan.get("goal", "").upper()
-        if execution.get("success") and goal == "REASON":
+        if execution.get("success") and goal == "REASON" and last_tool == "search_offers":
+            # Teklif karşılaştırması tamamen yapısal tool verisinden üretilebilir.
+            # İkinci bir model çağrısı hem gereksiz gecikme yaratıyor hem de bazı
+            # Qwen sürümlerinde iç muhakemenin kullanıcı yanıtına sızmasına yol açıyor.
+            answer = format_final_answer(final, last_tool)
+        elif execution.get("success") and goal == "REASON":
             reasoning_data = clean_tool_results_for_reasoning(execution.get("results", {}))
             answer = (await self._generate([{"role": "system", "content": get_reasoning_prompt(message, reasoning_data)}])).strip()
         elif goal == "CHAT":
