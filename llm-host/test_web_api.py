@@ -11,7 +11,8 @@ if importlib.util.find_spec("fastapi") is None:
 from app import CachedProcurementPlan, ConversationState, execute_plan
 from web_api import (AgentApplication, ChatRequest, ConversationStore, FALLBACK_PURPOSE,
                      TOOL_EXPLANATIONS, budget_replenishment_plan, conversation_title,
-                     has_write_intent, now, safe_value)
+                     has_write_intent, now, offer_tradeoff_fallback,
+                     prior_plan_draft_plan, safe_value)
 
 
 class WebApiTest(unittest.TestCase):
@@ -68,6 +69,61 @@ class WebApiTest(unittest.TestCase):
             50000.0,
         )
         self.assertNotIn("product_id", str(plan))
+
+    def test_followup_draft_uses_complete_previous_plan(self):
+        state = ConversationState()
+        state.last_plan = {
+            "success": True,
+            "items": [
+                {"allocations": [{"offer_id": 5, "quantity": 1}]},
+                {"allocations": [{"offer_id": 12, "quantity": 30}]},
+            ],
+        }
+
+        plan = prior_plan_draft_plan("Buna göre taslak sipariş oluştur.", state)
+
+        self.assertEqual(plan["goal"], "DRAFT")
+        self.assertEqual(plan["steps"], [{
+            "id": "step_1",
+            "tool": "create_purchase_draft",
+            "arguments": {
+                "items": {
+                    "$from_context": "last_plan",
+                    "$transform": "plan_to_draft_items",
+                }
+            },
+        }])
+
+    def test_offer_tradeoff_has_focused_safe_fallback(self):
+        result = {
+            "offers": [
+                {
+                    "id": 5,
+                    "seller": {"name": "ElectroShop"},
+                    "totalCost": 37350,
+                    "deliveryTimeDays": 3,
+                },
+                {
+                    "id": 6,
+                    "seller": {"name": "FastDelivery"},
+                    "totalCost": 39500,
+                    "deliveryTimeDays": 1,
+                },
+            ],
+            "hesaplanan_karsilastirma": {
+                "cheapestOfferId": 5,
+                "fastestOfferId": 6,
+            },
+        }
+
+        answer = offer_tradeoff_fallback(
+            "En ucuz ve en hızlı planı karşılaştır.",
+            result,
+        )
+
+        self.assertIn("2.150,00 TL daha pahalı", answer)
+        self.assertIn("2 gün daha erken", answer)
+        self.assertIn("Taslak veya sipariş oluşturulmadı", answer)
 
     def test_explicit_no_order_phrase_is_read_only(self):
         message = (
