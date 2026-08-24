@@ -27,11 +27,12 @@ The LLM proposes execution plans, but business rules, user authorization and wri
 - Observable execution plan, MCP trace, telemetry and user-facing decision journal.
 - Isolated acceptance database tooling for repeatable write scenarios.
 - React/Vite operations dashboard.
-- Opaque server-issued bearer sessions; anonymous compatibility in development and stable local user identity in production.
+- Anonymous opaque bearer-session compatibility in development; stable local identity with `HttpOnly` cookie sessions in production.
+- CSRF protection for cookie-authenticated production mutations and bounded login throttling.
 - Role-based authorization with `VIEWER`, `OPERATOR`, `MANAGER` and `ADMIN` capabilities.
 - Whole-plan RBAC preflight plus independent MCP dispatch authorization.
 - Production login/logout/me and ADMIN user management.
-- Authenticated, read-only production stock gateway; browser bearer tokens are not forwarded to stock-service.
+- Authenticated, read-only production stock gateway; browser session credentials are not forwarded to stock-service.
 - Separate fail-closed production Compose topology with non-root/read-only application containers.
 - Flyway-owned production schema migrations with Hibernate validation.
 - Tag-gated release workflow that publishes versioned application images and immutable digests.
@@ -76,7 +77,7 @@ Default host-facing endpoints:
 | Ollama, loopback-only | `http://localhost:11434` |
 | PostgreSQL, loopback-only | `localhost:5432` |
 
-The normal Docker `stock-service` and `llm-host` containers do **not** publish host ports. Browser traffic enters through the web gateway. The default development topology keeps anonymous bearer-session compatibility for LLM conversation isolation. Production uses a separate, stricter identity contract described below.
+The normal Docker `stock-service` and `llm-host` containers do **not** publish host ports. Browser traffic enters through the web gateway. The default development topology keeps anonymous bearer-session compatibility for LLM conversation isolation. Production uses a separate, stricter local-identity cookie/CSRF contract described below.
 
 Run in the background:
 
@@ -136,7 +137,10 @@ Copy `.env.production.example`, replace every weak/placeholder value, resolve re
 LLM_AUTH_MODE=local
 LLM_BOOTSTRAP_ADMIN_USERNAME=<admin-username>
 LLM_BOOTSTRAP_ADMIN_PASSWORD=<strong-random-password>
+LLM_SESSION_COOKIE_SECURE=true
 ```
+
+For a loopback-only local acceptance run over `http://127.0.0.1`, the template's `LLM_SESSION_COOKIE_SECURE=auto` mode is supported. Real HTTPS deployments should use `true`.
 
 Then run the fail-closed checks before startup:
 
@@ -151,10 +155,12 @@ Production identity behavior:
 
 - anonymous session issuance is disabled;
 - the first local `ADMIN` is created only when the identity store is empty;
-- login sessions are linked to stable user IDs;
+- local login creates an `HttpOnly`, `SameSite=Strict` session cookie and does not return the opaque session token in JSON;
+- authenticated state-changing LLM requests require a matching CSRF cookie/header proof;
+- repeated failed logins are protected by a bounded process-local throttle;
 - current roles are re-read server-side on protected requests;
 - unauthenticated `/stock` reads return `401`;
-- nginx validates the bearer session through `/api/auth/me` and strips the bearer before forwarding to stock-service;
+- nginx validates the session cookie through `/api/auth/me` and strips both `Cookie` and `Authorization` before forwarding to stock-service;
 - metrics and user management are `ADMIN`-only;
 - write-capable AI plans are limited by role at tool discovery, whole-plan preflight and MCP dispatch boundaries.
 
@@ -172,9 +178,9 @@ After startup, run the no-inference runtime smoke using the configured web port:
 python scripts/production_smoke.py --env-file .env.production --web-url http://127.0.0.1:8080
 ```
 
-It verifies local identity mode, login, `/me`, authenticated stock reads, ADMIN metrics, mutation blocking and session revocation on logout without asking Ollama to generate a response.
+It verifies cookie identity mode, login without bearer exposure, `/me`, authenticated stock reads, ADMIN metrics, login throttling, CSRF rejection, mutation blocking and session revocation on logout without asking Ollama to generate a response.
 
-See [`docs/production.md`](docs/production.md) for identity bootstrap, TLS, migrations, backup/restore, upgrades and rollback. See [`docs/task10-identity-rbac.md`](docs/task10-identity-rbac.md) for the role/enforcement model. See [`docs/release.md`](docs/release.md) for the guarded `vX.Y.Z` release flow and application image manifests.
+See [`docs/production.md`](docs/production.md) for identity bootstrap, cookie/CSRF policy, TLS, migrations, backup/restore, upgrades and rollback. See [`docs/task10-identity-rbac.md`](docs/task10-identity-rbac.md) for the role/enforcement model, [`docs/task11-session-auth-hardening.md`](docs/task11-session-auth-hardening.md) for the browser-session hardening contract, and [`docs/release.md`](docs/release.md) for the guarded `vX.Y.Z` release flow and application image manifests.
 
 ## Docker acceptance profile
 
@@ -291,7 +297,7 @@ $env:STOCK_SERVICE_URL = "http://localhost:8081"
 uvicorn secure_api:app --host 127.0.0.1 --port 8000
 ```
 
-Without `LLM_AUTH_MODE=local`, manual development uses anonymous session compatibility. To exercise local identity manually, set local auth mode plus bootstrap credentials and use a disposable identity/session database.
+Without `LLM_AUTH_MODE=local`, manual development uses anonymous session compatibility. To exercise local identity manually, set local auth mode plus bootstrap credentials and use a disposable identity/session database. Local identity uses browser cookies/CSRF rather than JavaScript-stored bearer credentials.
 
 The internal `web_api:app` implementation remains available to trusted tests and development code, but it is not the authenticated public entry point.
 
@@ -390,21 +396,21 @@ The authenticated role limits which write-capable tools are advertised to the mo
 
 ## Main REST surfaces
 
-The Spring Boot service provides inventory, incoming-order and marketplace REST APIs under `/api`. In the Docker topology the browser sees them through the read-only `/stock` gateway; MCP processes reach the full service on the internal Docker network. Production additionally requires bearer authentication for `/stock` reads.
+The Spring Boot service provides inventory, incoming-order and marketplace REST APIs under `/api`. In the Docker topology the browser sees them through the read-only `/stock` gateway; MCP processes reach the full service on the internal Docker network. Production additionally requires an authenticated local cookie session for `/stock` reads.
 
 The secured LLM host provides endpoints including:
 
 - `GET /api/health` (public liveness),
 - `GET /api/ready` (public side-effect-free readiness),
-- `GET /api/auth/config` (public identity-mode discovery),
+- `GET /api/auth/config` (public identity/session-transport discovery),
 - `POST /api/session` (anonymous development mode only),
-- `POST /api/auth/login` (local identity mode),
-- `GET /api/auth/me` and `POST /api/auth/logout` (authenticated local sessions),
+- `POST /api/auth/login` (local identity mode; sets the cookie session),
+- `GET /api/auth/me` and `POST /api/auth/logout` (authenticated local sessions; logout requires CSRF proof),
 - `GET /api/metrics` (authenticated, `ADMIN`-only in local mode),
-- `/api/admin/users...` (authenticated `ADMIN` user management),
-- `POST /api/chat` (authenticated bearer session),
-- conversation listing/detail/deletion (authenticated bearer session),
-- conversation confirmation endpoints (authenticated bearer session plus `confirm` capability in local mode).
+- `/api/admin/users...` (authenticated `ADMIN` user management; mutations require CSRF),
+- `POST /api/chat` (authenticated session; local mutations require CSRF),
+- conversation listing/detail/deletion (authenticated session; mutation methods require CSRF in local mode),
+- conversation confirmation endpoints (authenticated session plus CSRF and `confirm` capability in local mode).
 
 The dashboard consumes both services through the same-origin Nginx gateway.
 
@@ -430,97 +436,12 @@ After starting the default Compose stack:
 After production startup:
 
 1. The browser should show a login screen before stock/application data loads.
-2. Invalid or missing bearer credentials must not read `/stock` data.
+2. Missing/invalid local cookie sessions must not read `/stock` data.
 3. Log in as a named account and verify the current role is visible.
-4. `VIEWER` must remain read-only.
-5. `OPERATOR` may create a purchase draft but cannot confirm/place an order.
-6. `MANAGER`/`ADMIN` may perform confirmation flows permitted by the existing business state.
-7. Only `ADMIN` should see/use user management and metrics.
-8. Logout must return the browser to the login flow and invalidate the old token.
-
-Do not create artificial production business data merely to force a write-role test. Deterministic unit/CI coverage verifies the RBAC matrix without modifying production inventory.
-
-## Quality checks
-
-### Python
-
-```bash
-python -m unittest discover -s llm-host -p 'test_*.py'
-python -m unittest discover -s scripts -p 'test_*.py'
-python -m py_compile llm-host/*.py stock-mcp/*.py marketplace-mcp/*.py scripts/*.py
-python llm-host/golden_eval.py
-```
-
-### Security smoke
-
-```bash
-python scripts/security_smoke.py
-```
-
-### Observability smoke
-
-```bash
-python scripts/observability_smoke.py
-```
-
-### Production contract
-
-```bash
-python scripts/validate_production_env.py --env-file .env.production
-python scripts/production_smoke.py --env-file .env.production --config-only
-```
-
-### Production runtime smoke
-
-```bash
-python scripts/production_smoke.py --env-file .env.production --web-url http://127.0.0.1:8080
-```
-
-### Frontend
-
-```bash
-cd web-ui
-npm ci
-npm run lint
-npm run test
-npm run build
-```
-
-### Java
-
-```bash
-cd stock-service
-mvn test
-```
-
-### Docker
-
-```bash
-docker compose config
-docker compose build
-```
-
-### Repository hygiene
-
-```bash
-git diff --check
-git status
-```
-
-## Environment and secrets
-
-- Local `.env` and `.env.production` files are ignored; only documented example templates are tracked.
-- Runtime SQLite conversation, session and identity databases are ignored.
-- Generated acceptance reports are ignored.
-- `node_modules`, Vite output, coverage and common Python caches are ignored.
-- Server-side secrets must never be exposed through `VITE_*` variables.
-- Opaque browser bearer tokens are credentials whether they represent anonymous development sessions or authenticated production users.
-- Bootstrap administrator and database passwords must never be committed.
-- Development Compose defaults are intended for local development only.
-- Production deployment rejects weak credentials and mutable external image references before startup.
-
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for contribution and verification expectations.
-
-## Planned improvements
-
-Potential future work includes enterprise SSO/OIDC, MFA, password recovery, `HttpOnly` cookie migration, distributed session/identity storage, marketplace provider integrations, demand forecasting, notifications, mobile clients and persistent/distributed observability export.
+4. Verify the local browser does not store the opaque authentication credential in `localStorage` or `sessionStorage`.
+5. Verify protected state-changing requests fail without valid CSRF proof.
+6. `VIEWER` must remain read-only.
+7. `OPERATOR` may create a purchase draft but cannot confirm/place an order.
+8. `MANAGER`/`ADMIN` may perform confirmation flows permitted by the existing business state.
+9. Only `ADMIN` should see/use user management and metrics.
+10. Logout must return the browser to the login flow and invalidate the server-side cookie session.
