@@ -672,15 +672,46 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[TextConten
                 min_available_stock=min_available_stock
             )
 
+            offer_rows = []
+            for offer in offers:
+                row = offer.model_dump()
+                row["totalCost"] = offer.price + offer.shippingFee
+                offer_rows.append(row)
+
+            comparison = {
+                "quantity": 1,
+                "cheapestOfferId": None,
+                "fastestOfferId": None,
+            }
+            if offers:
+                cheapest_offer = min(
+                    offers,
+                    key=lambda offer: (
+                        offer.price + offer.shippingFee,
+                        offer.deliveryTimeDays,
+                        -offer.seller.rating,
+                        offer.id,
+                    ),
+                )
+                fastest_offer = min(
+                    offers,
+                    key=lambda offer: (
+                        offer.deliveryTimeDays,
+                        offer.price + offer.shippingFee,
+                        -offer.seller.rating,
+                        offer.id,
+                    ),
+                )
+                comparison["cheapestOfferId"] = cheapest_offer.id
+                comparison["fastestOfferId"] = fastest_offer.id
+
             result = {
                 "success": True,
                 "query": query,
                 "product_id": product_id,
                 "count": len(offers),
-                "offers": [
-                    offer.model_dump()
-                    for offer in offers
-                ]
+                "offers": offer_rows,
+                "hesaplanan_karsilastirma": comparison,
             }
 
             return [
