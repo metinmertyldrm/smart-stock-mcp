@@ -8,6 +8,12 @@ from mcp.client.stdio import stdio_client
 from rbac import authorize_tool, tool_visible
 
 
+INTERNAL_ONLY_TOOLS = frozenset({
+    "reject_purchase_draft",
+    "delete_purchase_draft",
+})
+
+
 def _server_parameters(server_path: str) -> StdioServerParameters:
     """Create MCP stdio parameters with the host environment inherited.
 
@@ -117,6 +123,10 @@ class MCPClient:
                 if tool.name in seen_tool_names:
                     continue
                 seen_tool_names.add(tool.name)
+                # Administrative draft lifecycle tools are invoked only by
+                # fixed authenticated HTTP endpoints, never selected by the LLM.
+                if tool.name in INTERNAL_ONLY_TOOLS:
+                    continue
                 if not tool_visible(tool.name):
                     continue
                 all_tools.append(tool)

@@ -275,6 +275,34 @@ public class MarketplaceService {
     }
 
     @Transactional
+    public MarketplacePurchaseDraft rejectDraft(Long draftId) {
+        MarketplacePurchaseDraft draft = draftRepository.findById(draftId)
+                .orElseThrow(() -> new IllegalArgumentException("Draft ID " + draftId + " not found."));
+
+        if (draft.getStatus() != MarketplacePurchaseDraftStatus.PENDING) {
+            throw new IllegalStateException(
+                    "Only PENDING drafts can be rejected. Draft ID " + draftId
+                            + " is in '" + draft.getStatus() + "' status.");
+        }
+
+        draft.setStatus(MarketplacePurchaseDraftStatus.REJECTED);
+        return draftRepository.save(draft);
+    }
+
+    @Transactional
+    public void deleteDraft(Long draftId) {
+        MarketplacePurchaseDraft draft = draftRepository.findById(draftId)
+                .orElseThrow(() -> new IllegalArgumentException("Draft ID " + draftId + " not found."));
+
+        if (draft.getStatus() == MarketplacePurchaseDraftStatus.CONFIRMED) {
+            throw new IllegalStateException(
+                    "Confirmed drafts cannot be deleted because they are linked to an order.");
+        }
+
+        draftRepository.delete(draft);
+    }
+
+    @Transactional
     public MarketplaceOrder placeOrder(Long draftId) {
         MarketplacePurchaseDraft draft = draftRepository.findById(draftId)
                 .orElseThrow(() -> new IllegalArgumentException("Draft ID " + draftId + " not found."));

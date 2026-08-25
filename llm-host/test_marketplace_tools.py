@@ -95,6 +95,15 @@ class ItemValidationTest(unittest.TestCase):
         self.assertFalse(result["success"])
         self.assertIn("product_id", result["error"])
 
+    def test_draft_management_requires_positive_id(self):
+        rejected = call("reject_purchase_draft", {"draft_id": 0})
+        deleted = call("delete_purchase_draft", {"draft_id": -1})
+
+        self.assertFalse(rejected["success"])
+        self.assertFalse(deleted["success"])
+        self.assertIn("positive draft ID", rejected["error"])
+        self.assertIn("positive draft ID", deleted["error"])
+
 
 class SearchOffersComparisonTest(unittest.TestCase):
     def test_search_offers_returns_totals_and_best_offer_ids(self):

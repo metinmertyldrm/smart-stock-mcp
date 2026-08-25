@@ -22,6 +22,8 @@ from identity import ROLE_ADMIN, ROLE_MANAGER, ROLE_OPERATOR, ROLE_VIEWER, norma
 
 
 DRAFT_WRITE_TOOLS = frozenset({"create_purchase_draft"})
+REVIEW_WRITE_TOOLS = frozenset({"reject_purchase_draft"})
+ADMIN_WRITE_TOOLS = frozenset({"delete_purchase_draft"})
 CONFIRM_WRITE_TOOLS = frozenset(
     {
         "place_order",
@@ -31,7 +33,7 @@ CONFIRM_WRITE_TOOLS = frozenset(
         "receive_orders",
     }
 )
-WRITE_TOOLS = DRAFT_WRITE_TOOLS | CONFIRM_WRITE_TOOLS
+WRITE_TOOLS = DRAFT_WRITE_TOOLS | REVIEW_WRITE_TOOLS | ADMIN_WRITE_TOOLS | CONFIRM_WRITE_TOOLS
 
 _current_role: ContextVar[str | None] = ContextVar("smart_stock_authenticated_role", default=None)
 
@@ -95,7 +97,9 @@ def allowed_write_tools(role: str | None) -> frozenset[str]:
         return frozenset()
     if normalized == ROLE_OPERATOR:
         return DRAFT_WRITE_TOOLS
-    if normalized in {ROLE_MANAGER, ROLE_ADMIN}:
+    if normalized == ROLE_MANAGER:
+        return DRAFT_WRITE_TOOLS | REVIEW_WRITE_TOOLS | CONFIRM_WRITE_TOOLS
+    if normalized == ROLE_ADMIN:
         return WRITE_TOOLS
     return frozenset()
 

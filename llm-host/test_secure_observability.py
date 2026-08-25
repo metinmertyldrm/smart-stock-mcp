@@ -4,6 +4,7 @@ import os
 import tempfile
 import unittest
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from fastapi import HTTPException
 from starlette.responses import StreamingResponse
@@ -23,6 +24,8 @@ from secure_api import (  # noqa: E402
     approve_purchase_draft,
     build_draft_approval_plan,
     correlate_chat_response,
+    delete_purchase_draft,
+    reject_purchase_draft,
 )
 
 
@@ -54,7 +57,9 @@ class FakeApprovalClient:
 def identity(role):
     capabilities = {"read", "draft"}
     if role in {"MANAGER", "ADMIN"}:
-        capabilities.add("confirm")
+        capabilities.update({"confirm", "reject_draft"})
+    if role == "ADMIN":
+        capabilities.add("delete_draft")
     return SimpleNamespace(
         id=f"{role.casefold()}-1",
         username=role.casefold(),
@@ -180,6 +185,55 @@ class SecuredResponseObservabilityTest(unittest.TestCase):
         self.assertEqual(
             [step["tool"] for step in plan["steps"]],
             ["place_order", "create_incoming_orders"],
+        )
+
+    def test_manager_can_reject_pending_draft_through_fixed_mcp_tool(self):
+        client = SimpleNamespace(call_tool=AsyncMock(return_value={
+            "success": True,
+            "id": 44,
+            "status": "REJECTED",
+        }))
+        app.state.agent = SimpleNamespace(client=client)
+        request = SimpleNamespace(state=SimpleNamespace(identity=identity("MANAGER")))
+
+        previous_auth_mode = secure_api_module.AUTH_MODE
+        secure_api_module.AUTH_MODE = "local"
+        try:
+            result = asyncio.run(reject_purchase_draft(44, request))
+        finally:
+            secure_api_module.AUTH_MODE = previous_auth_mode
+
+        self.assertEqual(result["status"], "REJECTED")
+        client.call_tool.assert_awaited_once_with(
+            "reject_purchase_draft", {"draft_id": 44}
+        )
+
+    def test_only_admin_can_delete_draft(self):
+        client = SimpleNamespace(call_tool=AsyncMock(return_value={
+            "success": True,
+            "draft_id": 45,
+            "deleted": True,
+        }))
+        app.state.agent = SimpleNamespace(client=client)
+        manager_request = SimpleNamespace(
+            state=SimpleNamespace(identity=identity("MANAGER"))
+        )
+        admin_request = SimpleNamespace(
+            state=SimpleNamespace(identity=identity("ADMIN"))
+        )
+
+        previous_auth_mode = secure_api_module.AUTH_MODE
+        secure_api_module.AUTH_MODE = "local"
+        try:
+            with self.assertRaises(HTTPException) as raised:
+                asyncio.run(delete_purchase_draft(45, manager_request))
+            self.assertEqual(raised.exception.status_code, 403)
+            result = asyncio.run(delete_purchase_draft(45, admin_request))
+        finally:
+            secure_api_module.AUTH_MODE = previous_auth_mode
+        self.assertTrue(result["deleted"])
+        client.call_tool.assert_awaited_once_with(
+            "delete_purchase_draft", {"draft_id": 45}
         )
 
 

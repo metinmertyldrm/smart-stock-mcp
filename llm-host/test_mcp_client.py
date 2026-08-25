@@ -51,6 +51,20 @@ class MCPClientToolListingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([tool.name for tool in tools], ["receive_order", "receive_orders"])
 
+    async def test_draft_management_tools_are_never_advertised_to_model(self):
+        client = MCPClient({})
+        client.sessions = {
+            "marketplace-server": FakeSession(
+                "list_marketplace_orders",
+                "reject_purchase_draft",
+                "delete_purchase_draft",
+            )
+        }
+
+        tools = await client.list_tools()
+
+        self.assertEqual([tool.name for tool in tools], ["list_marketplace_orders"])
+
     async def test_viewer_catalog_hides_all_write_tools(self):
         client = MCPClient({})
         client.sessions = {

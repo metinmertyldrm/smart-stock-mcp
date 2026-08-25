@@ -27,12 +27,21 @@ class RoleAuthorizationTest(unittest.TestCase):
             authorize_tool("place_order", role=ROLE_OPERATOR)
         with self.assertRaises(AuthorizationError):
             authorize_tool("receive_orders", role=ROLE_OPERATOR)
+        with self.assertRaises(AuthorizationError):
+            authorize_tool("reject_purchase_draft", role=ROLE_OPERATOR)
+        with self.assertRaises(AuthorizationError):
+            authorize_tool("delete_purchase_draft", role=ROLE_OPERATOR)
 
     def test_manager_and_admin_can_dispatch_confirm_writes(self):
         for role in (ROLE_MANAGER, ROLE_ADMIN):
             authorize_tool("create_purchase_draft", role=role)
             authorize_tool("place_order", role=role)
             authorize_tool("receive_orders", role=role)
+            authorize_tool("reject_purchase_draft", role=role)
+
+        with self.assertRaises(AuthorizationError):
+            authorize_tool("delete_purchase_draft", role=ROLE_MANAGER)
+        authorize_tool("delete_purchase_draft", role=ROLE_ADMIN)
 
     def test_request_role_context_is_reset(self):
         self.assertIsNone(current_role())

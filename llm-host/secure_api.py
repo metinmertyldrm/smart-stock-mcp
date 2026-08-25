@@ -37,6 +37,7 @@ from browser_security import (
 from app import execute_plan
 from approval_audit import DraftApprovalAuditStore
 from identity import IdentityError, IdentityStore, ROLE_VIEWER
+from plan_execution import normalize_tool_result
 from observability import (
     correlate_response_payload,
     emit_event,
@@ -439,6 +440,46 @@ async def approve_purchase_draft(draft_id: int, request: Request):
         "incoming": incoming,
         "audit": audit,
     }
+
+
+async def run_draft_management_tool(tool_name: str, draft_id: int) -> dict:
+    """Dispatch one fixed draft-management tool through the MCP/RBAC boundary."""
+    if draft_id <= 0:
+        raise HTTPException(422, "Taslak kimliği pozitif bir sayı olmalı.")
+    agent = getattr(app.state, "agent", None)
+    if agent is None:
+        raise HTTPException(503, "AI işlem servisi henüz hazır değil.")
+    try:
+        raw = await agent.client.call_tool(tool_name, {"draft_id": draft_id})
+    except Exception as exc:
+        emit_event(
+            "security.draft.management_failed",
+            level=logging.ERROR,
+            draftId=draft_id,
+            tool=tool_name,
+        )
+        raise HTTPException(502, "Taslak işlemi güvenli servis üzerinden tamamlanamadı.") from exc
+    normalized = normalize_tool_result(raw)
+    if not normalized.get("success"):
+        raise HTTPException(409, normalized.get("error") or "Taslak işlemi tamamlanamadı.")
+    data = normalized.get("data")
+    return data if isinstance(data, dict) else {"result": data}
+
+
+@app.post("/api/approvals/drafts/{draft_id}/reject")
+async def reject_purchase_draft(draft_id: int, request: Request):
+    actor = require_capability(request, "reject_draft")
+    draft = await run_draft_management_tool("reject_purchase_draft", draft_id)
+    emit_event("security.draft.rejected", role=actor.role, draftId=draft_id)
+    return {"success": True, "draftId": draft_id, "status": "REJECTED", "draft": draft}
+
+
+@app.delete("/api/approvals/drafts/{draft_id}")
+async def delete_purchase_draft(draft_id: int, request: Request):
+    actor = require_capability(request, "delete_draft")
+    await run_draft_management_tool("delete_purchase_draft", draft_id)
+    emit_event("security.draft.deleted", role=actor.role, draftId=draft_id)
+    return {"success": True, "draftId": draft_id, "deleted": True}
 
 
 @app.get("/api/ready")

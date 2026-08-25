@@ -488,6 +488,44 @@ async def list_tools() -> list[Tool]:
             }
         ),
         Tool(
+            name="reject_purchase_draft",
+            description=(
+                "Reject a pending purchase draft without placing an order. "
+                "This administrative action requires an authorized reviewer."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "draft_id": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Pending purchase draft ID to reject."
+                    },
+                },
+                "required": ["draft_id"],
+                "additionalProperties": False,
+            }
+        ),
+        Tool(
+            name="delete_purchase_draft",
+            description=(
+                "Permanently delete a pending or rejected purchase draft. "
+                "Confirmed drafts cannot be deleted."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "draft_id": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Purchase draft ID to delete."
+                    },
+                },
+                "required": ["draft_id"],
+                "additionalProperties": False,
+            }
+        ),
+        Tool(
             name="place_order",
             description="Place a purchase order from an existing purchase draft. Use this tool when the user wants to finalize, confirm, approve, or place a previously created purchase draft.",
             inputSchema={
@@ -1133,6 +1171,44 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[TextConten
                     text=json.dumps(result, ensure_ascii=False)
                 )
             ]
+
+        elif name == "reject_purchase_draft":
+            draft_id = arguments.get("draft_id")
+            if not isinstance(draft_id, int) or draft_id <= 0:
+                return [TextContent(type="text", text=json.dumps({
+                    "success": False,
+                    "error": "A positive draft ID is required.",
+                }, ensure_ascii=False))]
+            try:
+                draft = await service.reject_purchase_draft(draft_id)
+                result = draft.model_dump()
+                result["success"] = True
+                return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
+            except Exception as exc:
+                return [TextContent(type="text", text=json.dumps({
+                    "success": False,
+                    "error": f"Error rejecting draft: {str(exc)}",
+                }, ensure_ascii=False))]
+
+        elif name == "delete_purchase_draft":
+            draft_id = arguments.get("draft_id")
+            if not isinstance(draft_id, int) or draft_id <= 0:
+                return [TextContent(type="text", text=json.dumps({
+                    "success": False,
+                    "error": "A positive draft ID is required.",
+                }, ensure_ascii=False))]
+            try:
+                await service.delete_purchase_draft(draft_id)
+                return [TextContent(type="text", text=json.dumps({
+                    "success": True,
+                    "draft_id": draft_id,
+                    "deleted": True,
+                }, ensure_ascii=False))]
+            except Exception as exc:
+                return [TextContent(type="text", text=json.dumps({
+                    "success": False,
+                    "error": f"Error deleting draft: {str(exc)}",
+                }, ensure_ascii=False))]
 
         elif name == "place_order":
             draft_id = arguments.get("draft_id")

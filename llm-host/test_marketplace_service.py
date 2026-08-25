@@ -5,7 +5,7 @@ import os
 import sys
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -64,6 +64,36 @@ class MarketplaceDraftAssociationTest(unittest.TestCase):
                 }]))
 
         http_client.assert_not_called()
+
+    def test_reject_and_delete_use_draft_lifecycle_endpoints(self):
+        service = self.module.MarketplaceService("http://stock-service:8081")
+        client = SimpleNamespace(
+            post=AsyncMock(return_value=SimpleNamespace(
+                raise_for_status=Mock(),
+                json=lambda: {
+                    "id": 12,
+                    "totalCost": 100.0,
+                    "status": "REJECTED",
+                    "items": [],
+                },
+            )),
+            delete=AsyncMock(return_value=SimpleNamespace(raise_for_status=Mock())),
+        )
+        context = AsyncMock()
+        context.__aenter__.return_value = client
+        context.__aexit__.return_value = False
+
+        with patch.object(self.module.httpx, "AsyncClient", return_value=context):
+            rejected = asyncio.run(service.reject_purchase_draft(12))
+            asyncio.run(service.delete_purchase_draft(12))
+
+        self.assertEqual(rejected.status, "REJECTED")
+        client.post.assert_awaited_once_with(
+            "http://stock-service:8081/api/marketplace/drafts/12/reject"
+        )
+        client.delete.assert_awaited_once_with(
+            "http://stock-service:8081/api/marketplace/drafts/12"
+        )
 
 
 if __name__ == "__main__":

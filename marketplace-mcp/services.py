@@ -95,6 +95,23 @@ class MarketplaceService:
             response.raise_for_status()
             return MarketplacePurchaseDraftResponse(**response.json())
 
+    async def reject_purchase_draft(self, draft_id: int) -> MarketplacePurchaseDraftResponse:
+        """Reject a pending purchase draft without creating an order."""
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{self.base_url}/api/marketplace/drafts/{draft_id}/reject"
+            )
+            response.raise_for_status()
+            return MarketplacePurchaseDraftResponse(**response.json())
+
+    async def delete_purchase_draft(self, draft_id: int) -> None:
+        """Permanently delete a pending or rejected purchase draft."""
+        async with httpx.AsyncClient() as client:
+            response = await client.delete(
+                f"{self.base_url}/api/marketplace/drafts/{draft_id}"
+            )
+            response.raise_for_status()
+
     async def place_order(self, draft_id: int) -> MarketplaceOrderResponse:
         """Place a purchase order using draft ID."""
         async with httpx.AsyncClient() as client:

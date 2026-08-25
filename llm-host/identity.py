@@ -34,8 +34,10 @@ ROLES = (ROLE_VIEWER, ROLE_OPERATOR, ROLE_MANAGER, ROLE_ADMIN)
 ROLE_CAPABILITIES = {
     ROLE_VIEWER: frozenset({"read"}),
     ROLE_OPERATOR: frozenset({"read", "draft"}),
-    ROLE_MANAGER: frozenset({"read", "draft", "confirm"}),
-    ROLE_ADMIN: frozenset({"read", "draft", "confirm", "metrics", "users"}),
+    ROLE_MANAGER: frozenset({"read", "draft", "confirm", "reject_draft"}),
+    ROLE_ADMIN: frozenset({
+        "read", "draft", "confirm", "reject_draft", "delete_draft", "metrics", "users"
+    }),
 }
 
 _USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{2,63}$")

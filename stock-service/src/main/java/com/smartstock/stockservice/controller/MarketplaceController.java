@@ -68,6 +68,29 @@ public class MarketplaceController {
                 .map(ResponseEntity::ok).orElse(ResponseEntity.notFound().build());
     }
 
+    @PostMapping("/drafts/{draftId}/reject")
+    public ResponseEntity<?> rejectDraft(@PathVariable Long draftId) {
+        try {
+            return ResponseEntity.ok(mapToDraftDto(marketplaceService.rejectDraft(draftId)));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(e.getMessage());
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(e.getMessage());
+        }
+    }
+
+    @DeleteMapping("/drafts/{draftId}")
+    public ResponseEntity<?> deleteDraft(@PathVariable Long draftId) {
+        try {
+            marketplaceService.deleteDraft(draftId);
+            return ResponseEntity.noContent().build();
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(e.getMessage());
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(e.getMessage());
+        }
+    }
+
     @PostMapping("/orders")
     public ResponseEntity<?> placeOrder(@RequestBody PlaceOrderRequestDto request) {
         try {
