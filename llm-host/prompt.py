@@ -287,6 +287,7 @@ NON-NEGOTIABLE SAFETY / ROUTING RULES:
 16. If LAST_REFERENCE has source:search_offers and the user asks to compare the cheapest and fastest prior offers, call search_offers again with its recorded query. This refreshes marketplace data through MCP; goal=REASON.
 17. `answer` must be Turkish. Do not invent tool results or bypass host confirmation rules.
 18. For a named product's current stock + pending incoming + target/remaining need, use INFO: search_products(query=product name), then calculate_replenishment(product_ids={{"$from":"step_1.products.id"}}). list_products alone cannot answer pending incoming quantity.
+19. Never write literal offer IDs into create_purchase_draft. Draft items must always use plan_to_draft_items from create_procurement_plan or a server-owned prior procurement plan. An explicit user quantity overrides replenishment recommendations; never replace "1 adet" with the calculated shortage.
 
 REFERENCE TRANSFORMS:
 - replenishments_to_items
@@ -306,6 +307,7 @@ KEY EXAMPLES:
 8. "Bekleyen siparişleri kontrol et ve teslim edilen ürünleri stoğa ekle" -> goal=RECEIVE with ONLY list_incoming_orders(pending_only=true,ready_only=true); wait for confirmation before receive_orders.
 9. "Toplam bütçe 50.000 TL'yi geçmeyecek şekilde eksik ürünleri tamamla" -> goal=PLAN: calculate_replenishment(arguments={{}}); then create_procurement_plan(items={{"$from":"step_1.replenishments","$transform":"replenishments_to_items"}},objective="CHEAPEST",filters={{"max_total_budget":50000}}).
 10. "Dell Latitude 5440 için mevcut stok, bekleyen ikmal, hedef stok ve kalan ihtiyacı göster" -> goal=INFO: search_products(query="Dell Latitude 5440"); then calculate_replenishment(product_ids={{"$from":"step_1.products.id"}}).
+11. "1 adeti için taslak oluştur" after one product result -> goal=DRAFT: create_procurement_plan for that context product with quantity=1; then create_purchase_draft(items={{"$from":"step_1","$transform":"plan_to_draft_items"}}). Never reuse the replenishment quantity when the user states a quantity.
 
 Return only the execution_plan JSON object.
 """

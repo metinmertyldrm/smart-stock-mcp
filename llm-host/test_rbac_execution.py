@@ -31,7 +31,7 @@ class PlanRbacPreflightTest(unittest.IsolatedAsyncioTestCase):
                 {
                     "id": "create-draft",
                     "tool": "create_purchase_draft",
-                    "arguments": {"items": [{"offer_id": 1, "quantity": 1}]},
+                    "arguments": {"items": [{"product_id": 10, "offer_id": 1, "quantity": 1}]},
                 },
             ],
         }
@@ -63,7 +63,7 @@ class PlanRbacPreflightTest(unittest.IsolatedAsyncioTestCase):
                 {
                     "id": "create-draft",
                     "tool": "create_purchase_draft",
-                    "arguments": {"items": [{"offer_id": 1, "quantity": 1}]},
+                    "arguments": {"items": [{"product_id": 10, "offer_id": 1, "quantity": 1}]},
                 }
             ],
         }

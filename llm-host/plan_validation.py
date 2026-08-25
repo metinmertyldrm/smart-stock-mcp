@@ -41,6 +41,54 @@ INFO_TOOLS = {
 }
 
 
+def validate_draft_offer_source(steps: list[dict]) -> None:
+    """Require draft offers to come from an authoritative plan result.
+
+    Literal offer IDs emitted by the model are not trustworthy: an ID can point
+    at a completely different product in the current database.  The draft input
+    must therefore be derived from a marketplace procurement plan (or a
+    server-owned prior plan/reference) through plan_to_draft_items.
+    """
+    draft_step = steps[-1]
+    items = (draft_step.get("arguments") or {}).get("items")
+    if not isinstance(items, dict) or items.get("$transform") != "plan_to_draft_items":
+        raise ValueError(
+            "DRAFT planında teklif kimlikleri doğrudan yazılamaz; "
+            "create_purchase_draft kalemleri doğrulanmış satın alma planından üretilmelidir."
+        )
+
+    source = items.get("$from")
+    context_source = items.get("$from_context")
+    if source:
+        source_step_id = str(source).partition(".")[0]
+        source_step = next(
+            (step for step in steps[:-1] if str(step.get("id")) == source_step_id),
+            None,
+        )
+        if not source_step or source_step.get("tool") not in {
+            "create_procurement_plan",
+            "compare_offers",
+        }:
+            raise ValueError(
+                "DRAFT teklifleri aynı plandaki doğrulanmış marketplace seçiminden gelmelidir."
+            )
+        return
+
+    if context_source:
+        root = str(context_source).partition(".")[0]
+        safe_contexts = {
+            "last_plan",
+            "last_cheapest_plan",
+            "last_fastest_plan",
+            "last_reference",
+        }
+        if root not in safe_contexts:
+            raise ValueError("DRAFT için güvenilir bir önceki satın alma planı bulunamadı.")
+        return
+
+    raise ValueError("DRAFT tekliflerinin doğrulanmış kaynak adımı eksik.")
+
+
 def remove_json_comments(text: str) -> str:
     """Strip JavaScript-style comments without touching quoted strings."""
     comment_pattern = r'("(?:\\.|[^"\\])*")|(?:\/\*(?:[^*]|\*(?!\/))*\*\/)|(?:\/\/.*)'
@@ -154,6 +202,7 @@ def parse_execution_plan(text: str) -> dict:
         for step in steps:
             if step["tool"] == "place_order":
                 raise ValueError("DRAFT planı 'place_order' adımı içeremez.")
+        validate_draft_offer_source(steps)
     elif goal == "ORDER":
         if not steps:
             raise ValueError("ORDER planında en az bir adım bulunmalıdır.")

@@ -81,6 +81,61 @@ class GoalRuleTest(unittest.TestCase):
                 {"id": "step_1", "tool": "place_order"},
                 {"id": "step_2", "tool": "create_purchase_draft"}]))
 
+    def test_draft_cannot_use_model_literal_offer_ids(self):
+        with self.assertRaisesRegex(ValueError, "doğrudan yazılamaz"):
+            app.parse_execution_plan(plan_json(goal="DRAFT", steps=[{
+                "id": "step_1",
+                "tool": "create_purchase_draft",
+                "arguments": {
+                    "items": [{"product_id": 418, "offer_id": 1, "quantity": 1}],
+                },
+            }]))
+
+    def test_draft_accepts_offer_items_from_procurement_plan(self):
+        parsed = app.parse_execution_plan(plan_json(goal="DRAFT", steps=[
+            {
+                "id": "step_1",
+                "tool": "create_procurement_plan",
+                "arguments": {
+                    "items": [{"product_id": 418, "quantity": 1}],
+                    "objective": "CHEAPEST",
+                },
+            },
+            {
+                "id": "step_2",
+                "tool": "create_purchase_draft",
+                "arguments": {
+                    "items": {
+                        "$from": "step_1",
+                        "$transform": "plan_to_draft_items",
+                    },
+                },
+            },
+        ]))
+
+        self.assertEqual(parsed["goal"], "DRAFT")
+
+    def test_draft_accepts_selected_offer_from_comparison(self):
+        parsed = app.parse_execution_plan(plan_json(goal="DRAFT", steps=[
+            {
+                "id": "step_1",
+                "tool": "compare_offers",
+                "arguments": {"product_id": 418, "quantity": 1},
+            },
+            {
+                "id": "step_2",
+                "tool": "create_purchase_draft",
+                "arguments": {
+                    "items": {
+                        "$from": "step_1",
+                        "$transform": "plan_to_draft_items",
+                    },
+                },
+            },
+        ]))
+
+        self.assertEqual(parsed["steps"][0]["tool"], "compare_offers")
+
     def test_chat_goal_requires_answer_and_no_steps(self):
         parsed = app.parse_execution_plan(plan_json(goal="CHAT", answer="Merhaba"))
         self.assertEqual(parsed["answer"], "Merhaba")

@@ -62,6 +62,29 @@ def plan_to_draft_items(value):
     elif hasattr(value, "items") and not callable(value.items):
         value = value.items
 
+    def product_id_from(*candidates):
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            product_id = candidate.get("product_id") or candidate.get("productId")
+            if product_id is None and isinstance(candidate.get("product"), dict):
+                product_id = candidate["product"].get("id")
+            if product_id is not None:
+                return int(product_id)
+        return None
+
+    def append_item(offer_id, quantity, product_id):
+        # A draft offer without its expected inventory product cannot be checked
+        # against the marketplace database.  Dropping it makes the executor's
+        # empty-input guard stop the write instead of guessing an association.
+        if offer_id is None or quantity is None or quantity <= 0 or product_id is None:
+            return
+        draft_items.append({
+            "product_id": int(product_id),
+            "offer_id": int(offer_id),
+            "quantity": int(quantity),
+        })
+
     draft_items = []
     if isinstance(value, list):
         for item in value or []:
@@ -70,21 +93,20 @@ def plan_to_draft_items(value):
                 for allocation in allocations:
                     offer_id = allocation.get("offer_id") or allocation.get("id")
                     quantity = allocation.get("quantity")
-                    if offer_id is not None and quantity is not None and quantity > 0:
-                        draft_items.append({"offer_id": int(offer_id), "quantity": int(quantity)})
+                    append_item(offer_id, quantity, product_id_from(allocation, item))
             else:
-                offer_id = item.get("offer_id") or item.get("id")
+                # A generic `id` on a procurement item may be a product ID.  Only
+                # an explicit offer_id is safe at this level.
+                offer_id = item.get("offer_id") or item.get("offerId")
                 quantity = item.get("quantity")
-                if offer_id is not None and quantity is not None and quantity > 0:
-                    draft_items.append({"offer_id": int(offer_id), "quantity": int(quantity)})
+                append_item(offer_id, quantity, product_id_from(item))
     elif isinstance(value, dict):
         allocations = value.get("allocations")
         if allocations:
             for allocation in allocations:
                 offer_id = allocation.get("offer_id") or allocation.get("id")
                 quantity = allocation.get("quantity")
-                if offer_id is not None and quantity is not None and quantity > 0:
-                    draft_items.append({"offer_id": int(offer_id), "quantity": int(quantity)})
+                append_item(offer_id, quantity, product_id_from(allocation, value))
         else:
             selected_offer = value.get("selected_offer")
             if selected_offer:
@@ -95,13 +117,11 @@ def plan_to_draft_items(value):
                     or selected_offer.get("quantity")
                     or 1
                 )
-                if offer_id is not None and quantity is not None and quantity > 0:
-                    draft_items.append({"offer_id": int(offer_id), "quantity": int(quantity)})
+                append_item(offer_id, quantity, product_id_from(selected_offer, value))
             else:
-                offer_id = value.get("offer_id") or value.get("id")
+                offer_id = value.get("offer_id") or value.get("offerId")
                 quantity = value.get("quantity") or 1
-                if offer_id is not None:
-                    draft_items.append({"offer_id": int(offer_id), "quantity": int(quantity)})
+                append_item(offer_id, quantity, product_id_from(value))
     return draft_items
 
 

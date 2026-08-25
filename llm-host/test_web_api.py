@@ -11,6 +11,7 @@ if importlib.util.find_spec("fastapi") is None:
 from app import CachedProcurementPlan, ConversationState, execute_plan
 from web_api import (AgentApplication, ChatRequest, ConversationStore, FALLBACK_PURPOSE,
                      TOOL_EXPLANATIONS, budget_replenishment_plan, conversation_title,
+                     contextual_product_draft_plan, explicit_draft_quantity,
                      has_write_intent, now, offer_tradeoff_fallback,
                      prior_plan_draft_plan, product_replenishment_info_plan,
                      safe_value, structured_answer)
@@ -76,8 +77,8 @@ class WebApiTest(unittest.TestCase):
         state.last_plan = {
             "success": True,
             "items": [
-                {"allocations": [{"offer_id": 5, "quantity": 1}]},
-                {"allocations": [{"offer_id": 12, "quantity": 30}]},
+                {"product_id": 81, "allocations": [{"offer_id": 5, "quantity": 1}]},
+                {"product_id": 82, "allocations": [{"offer_id": 12, "quantity": 30}]},
             ],
         }
 
@@ -99,7 +100,10 @@ class WebApiTest(unittest.TestCase):
         state = ConversationState()
         state.last_plan = {
             "success": True,
-            "items": [{"allocations": [{"offer_id": 9, "quantity": 1}]}],
+            "items": [{
+                "product_id": 91,
+                "allocations": [{"offer_id": 9, "quantity": 1}],
+            }],
         }
 
         plan = prior_plan_draft_plan(
@@ -113,6 +117,50 @@ class WebApiTest(unittest.TestCase):
             plan["steps"][0]["arguments"]["items"]["$from_context"],
             "last_plan",
         )
+
+    def test_contextual_product_draft_uses_user_quantity_not_replenishment(self):
+        state = ConversationState()
+        state.last_product = {"id": 418, "name": "Veritabanından Gelen Ürün"}
+        state.last_replenishment = {
+            "product_id": 418,
+            "replenishment_quantity_needed": 33,
+        }
+        state.last_reference_id = "ref_product"
+        state.references["ref_product"] = {
+            "type": "replenishment_list",
+            "source_tool": "calculate_replenishment",
+            "count": 1,
+            "data": [{"productId": 418, "replenishmentQuantityNeeded": 33}],
+        }
+
+        plan = contextual_product_draft_plan("1 adeti için taslak oluştur", state)
+
+        self.assertEqual(plan["goal"], "DRAFT")
+        self.assertEqual(
+            plan["steps"][0]["arguments"]["items"],
+            [{"product_id": 418, "quantity": 1}],
+        )
+        self.assertEqual(
+            plan["steps"][1]["arguments"]["items"],
+            {"$from": "step_1", "$transform": "plan_to_draft_items"},
+        )
+
+    def test_contextual_product_draft_requires_one_authoritative_product(self):
+        state = ConversationState()
+        state.last_product = {"id": 418, "name": "İlk Ürün"}
+        state.last_reference_id = "ref_many"
+        state.references["ref_many"] = {
+            "type": "product_list",
+            "source_tool": "list_products",
+            "count": 2,
+            "data": [{"id": 418}, {"id": 419}],
+        }
+
+        self.assertIsNone(contextual_product_draft_plan("1 adet taslak oluştur", state))
+
+    def test_explicit_draft_quantity_understands_common_turkish_forms(self):
+        self.assertEqual(explicit_draft_quantity("1 adeti için taslak oluştur"), 1)
+        self.assertEqual(explicit_draft_quantity("iki tanesini taslağa ekle"), 2)
 
     def test_offer_tradeoff_has_focused_safe_fallback(self):
         result = {

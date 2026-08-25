@@ -54,12 +54,37 @@ class MarketplaceService:
             return response.json()
 
     async def create_purchase_draft(self, items: List[dict]) -> MarketplacePurchaseDraftResponse:
-        """Create a new purchase draft in the system."""
+        """Create a draft after verifying every offer/product association.
+
+        `offer_id` values are database-local identifiers. Never trust a model
+        or caller to pair one with the intended product: resolve current offers
+        for the expected product and reject mismatches before the POST that
+        creates persistent data.
+        """
         payload_items = []
+        offers_by_product = {}
         for item in items:
+            product_id = item.get("product_id") or item.get("productId")
+            offer_id = item.get("offer_id") or item.get("offerId")
+            quantity = item.get("quantity")
+            if product_id is None or offer_id is None or not quantity or int(quantity) <= 0:
+                raise ValueError(
+                    "Each draft item requires a positive product_id, offer_id and quantity."
+                )
+
+            product_id = int(product_id)
+            offer_id = int(offer_id)
+            if product_id not in offers_by_product:
+                offers_by_product[product_id] = await self.get_offers_by_product_id(product_id)
+            valid_offer_ids = {int(offer.id) for offer in offers_by_product[product_id]}
+            if offer_id not in valid_offer_ids:
+                raise ValueError(
+                    f"Offer ID {offer_id} does not belong to product ID {product_id}."
+                )
+
             payload_items.append({
-                "offerId": item.get("offer_id") or item.get("offerId"),
-                "quantity": item["quantity"]
+                "offerId": offer_id,
+                "quantity": int(quantity),
             })
 
         async with httpx.AsyncClient() as client:

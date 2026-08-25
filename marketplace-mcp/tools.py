@@ -465,12 +465,20 @@ async def list_tools() -> list[Tool]:
                                     "type": "integer",
                                     "description": "Marketplace offer ID."
                                 },
+                                "product_id": {
+                                    "type": "integer",
+                                    "description": (
+                                        "Expected inventory product ID. The marketplace host "
+                                        "verifies that offer_id belongs to this product before writing."
+                                    )
+                                },
                                 "quantity": {
                                     "type": "integer",
+                                    "minimum": 1,
                                     "description": "Quantity to purchase."
                                 }
                             },
-                            "required": ["offer_id", "quantity"],
+                            "required": ["product_id", "offer_id", "quantity"],
                             "additionalProperties": False,
                         }
                     }
@@ -843,7 +851,7 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[TextConten
 
             # Construct reasoning string
             filters_clause = " ve ".join(applied_filters)
-            
+
             if objective == "CHEAPEST":
                 reason = (
                     f"Seçilen teklif, {filters_clause} kriterlerini karşılayan "
@@ -1096,6 +1104,26 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[TextConten
                         text=json.dumps({"success": False, "error": "No items provided."}, ensure_ascii=False)
                     )
                 ]
+            if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+                return [TextContent(type="text", text=json.dumps({
+                    "success": False,
+                    "error": "Draft items must be a list of objects.",
+                }, ensure_ascii=False))]
+            incomplete = [
+                item for item in items
+                if item.get("product_id") is None
+                or item.get("offer_id") is None
+                or not isinstance(item.get("quantity"), int)
+                or item.get("quantity") <= 0
+            ]
+            if incomplete:
+                return [TextContent(type="text", text=json.dumps({
+                    "success": False,
+                    "error": (
+                        "Each draft item requires product_id, offer_id and a positive "
+                        "integer quantity."
+                    ),
+                }, ensure_ascii=False))]
             draft = await service.create_purchase_draft(items)
             result = draft.model_dump()
             result["success"] = True
@@ -1215,5 +1243,3 @@ if __name__ == "__main__":
             )
 
     asyncio.run(main())
-
-            

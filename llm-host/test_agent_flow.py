@@ -141,8 +141,90 @@ class PersistedPlanFollowupTest(unittest.TestCase):
         self.assertEqual(response["pendingDraftId"], 77)
         self.assertEqual(client.calls[-1], (
             "create_purchase_draft",
-            {"items": [{"offer_id": 9, "quantity": 1}]},
+            {"items": [{"product_id": 2, "offer_id": 9, "quantity": 1}]},
         ))
+
+
+class ContextualProductQuantityDraftTest(unittest.TestCase):
+    """Regression for a follow-up that previously drafted another product."""
+
+    BAD_LITERAL_PLAN = json.dumps({
+        "type": "execution_plan",
+        "goal": "DRAFT",
+        "steps": [
+            {"id": "step_1", "tool": "search_products",
+             "arguments": {"query": "Database Product"}},
+            {"id": "step_2", "tool": "calculate_replenishment",
+             "arguments": {"product_id": 742}},
+            {"id": "step_3", "tool": "create_purchase_draft",
+             "arguments": {"items": [{"offer_id": 1, "quantity": 33}]}},
+        ],
+    })
+
+    def test_explicit_quantity_and_context_product_replace_bad_model_ids(self):
+        client = FakeMCPClient({
+            "create_procurement_plan": {
+                "success": True,
+                "complete": True,
+                "items": [{
+                    "product_id": 742,
+                    "product_name": "Database Product",
+                    "required_quantity": 1,
+                    "fulfilled_quantity": 1,
+                    "allocations": [{"offer_id": 9007, "quantity": 1}],
+                }],
+                "overall_total": 28000.0,
+            },
+            "create_purchase_draft": {
+                "success": True,
+                "id": 88,
+                "totalCost": 28000.0,
+                "status": "PENDING",
+                "items": [{
+                    "product": {"id": 742, "name": "Database Product"},
+                    "quantity": 1,
+                    "seller": {"name": "Current Seller"},
+                    "price": 28000.0,
+                    "shippingFee": 0.0,
+                    "deliveryTimeDays": 2,
+                }],
+            },
+        })
+        agent = web_api.AgentApplication(
+            client,
+            ScriptedLLM(self.BAD_LITERAL_PLAN),
+            temp_store(self),
+        )
+        state = web_api.ConversationState()
+        state.last_product = {"id": 742, "name": "Database Product"}
+        state.last_replenishment = {
+            "product_id": 742,
+            "replenishment_quantity_needed": 33,
+        }
+        state.last_reference_id = "ref_one"
+        state.references["ref_one"] = {
+            "type": "replenishment_list",
+            "source_tool": "calculate_replenishment",
+            "count": 1,
+            "data": [{"productId": 742, "replenishmentQuantityNeeded": 33}],
+        }
+        agent.states["c1"] = state
+
+        response = run(agent.chat("c1", "1 adeti için taslak oluştur"))
+
+        self.assertTrue(response["succeeded"])
+        self.assertEqual(client.called_tools, [
+            "create_procurement_plan",
+            "create_purchase_draft",
+        ])
+        self.assertEqual(client.calls[0][1]["items"], [
+            {"product_id": 742, "quantity": 1},
+        ])
+        self.assertEqual(client.calls[1][1]["items"], [
+            {"product_id": 742, "offer_id": 9007, "quantity": 1},
+        ])
+        self.assertIn("Database Product", response["finalAnswer"])
+        self.assertNotIn("33 adet", response["finalAnswer"])
 
 
 class TraceStatusTest(unittest.TestCase):
@@ -183,12 +265,27 @@ class PendingDraftTest(unittest.TestCase):
     yalnızca 'draftId' arıyordu; taslak→onay→sipariş zinciri hiç kurulamıyordu."""
 
     DRAFT_PLAN = json.dumps({"type": "execution_plan", "goal": "DRAFT", "steps": [
-        {"id": "step_1", "tool": "create_purchase_draft",
-         "arguments": {"items": [{"offer_id": 1, "quantity": 5}]}}]})
+        {"id": "step_1", "tool": "create_procurement_plan",
+         "arguments": {"items": [{"product_id": 18, "quantity": 5}],
+                       "objective": "CHEAPEST"}},
+        {"id": "step_2", "tool": "create_purchase_draft",
+         "arguments": {"items": {"$from": "step_1",
+                                  "$transform": "plan_to_draft_items"}}}]})
 
     def test_draft_id_is_remembered_for_confirmation(self):
-        client = FakeMCPClient({"create_purchase_draft": {
-            "success": True, "id": 77, "totalCost": 1000.0, "status": "PENDING", "items": []}})
+        client = FakeMCPClient({
+            "create_procurement_plan": {
+                "success": True,
+                "items": [{
+                    "product_id": 18,
+                    "allocations": [{"offer_id": 1, "quantity": 5}],
+                }],
+            },
+            "create_purchase_draft": {
+                "success": True, "id": 77, "totalCost": 1000.0,
+                "status": "PENDING", "items": [],
+            },
+        })
         agent = web_api.AgentApplication(client, ScriptedLLM(self.DRAFT_PLAN), temp_store(self))
 
         response = run(agent.chat("c1", "taslak sipariş oluştur"))
@@ -409,8 +506,15 @@ class PermissionTest(unittest.TestCase):
 
     def test_read_only_request_cannot_write(self):
         draft_plan = json.dumps({"type": "execution_plan", "goal": "DRAFT", "steps": [
-            {"id": "step_1", "tool": "create_purchase_draft", "arguments": {"items": []}}]})
-        client = FakeMCPClient({"create_purchase_draft": {"success": True}})
+            {"id": "step_1", "tool": "create_procurement_plan",
+             "arguments": {"items": [{"product_id": 1, "quantity": 1}]}},
+            {"id": "step_2", "tool": "create_purchase_draft",
+             "arguments": {"items": {"$from": "step_1",
+                                      "$transform": "plan_to_draft_items"}}}]})
+        client = FakeMCPClient({
+            "create_procurement_plan": {"success": True, "items": []},
+            "create_purchase_draft": {"success": True},
+        })
         agent = web_api.AgentApplication(client, ScriptedLLM(draft_plan), temp_store(self))
 
         with self.assertRaises(Exception):

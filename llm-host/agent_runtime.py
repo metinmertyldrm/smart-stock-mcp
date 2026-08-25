@@ -5,6 +5,7 @@ import asyncio
 import time
 from mcp_client import MCPClient
 from llm import LLMService
+from plan_validation import validate_draft_offer_source
 from prompt import get_execution_plan_prompt, get_reasoning_prompt
 
 # Configure paths relative to this script
@@ -167,6 +168,7 @@ def parse_execution_plan(text: str) -> dict:
         for step in steps:
             if step["tool"] == "place_order":
                 raise ValueError("DRAFT planı 'place_order' adımı içeremez.")
+        validate_draft_offer_source(steps)
 
     elif goal == "ORDER":
         if not steps:
@@ -314,6 +316,26 @@ def plan_to_draft_items(value):
     elif hasattr(value, "items") and not callable(value.items):
         value = value.items
 
+    def product_id_from(*candidates):
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            product_id = candidate.get("product_id") or candidate.get("productId")
+            if product_id is None and isinstance(candidate.get("product"), dict):
+                product_id = candidate["product"].get("id")
+            if product_id is not None:
+                return int(product_id)
+        return None
+
+    def append_item(offer_id, quantity, product_id):
+        if offer_id is None or quantity is None or quantity <= 0 or product_id is None:
+            return
+        draft_items.append({
+            "product_id": int(product_id),
+            "offer_id": int(offer_id),
+            "quantity": int(quantity),
+        })
+
     draft_items = []
     if isinstance(value, list):
         for item in value or []:
@@ -322,48 +344,28 @@ def plan_to_draft_items(value):
                 for allocation in allocations:
                     offer_id = allocation.get("offer_id") or allocation.get("id")
                     quantity = allocation.get("quantity")
-                    if offer_id is not None and quantity is not None and quantity > 0:
-                        draft_items.append({
-                            "offer_id": int(offer_id),
-                            "quantity": int(quantity),
-                        })
+                    append_item(offer_id, quantity, product_id_from(allocation, item))
             else:
-                offer_id = item.get("offer_id") or item.get("id")
+                offer_id = item.get("offer_id") or item.get("offerId")
                 quantity = item.get("quantity")
-                if offer_id is not None and quantity is not None and quantity > 0:
-                    draft_items.append({
-                        "offer_id": int(offer_id),
-                        "quantity": int(quantity),
-                    })
+                append_item(offer_id, quantity, product_id_from(item))
     elif isinstance(value, dict):
         allocations = value.get("allocations")
         if allocations:
             for allocation in allocations:
                 offer_id = allocation.get("offer_id") or allocation.get("id")
                 quantity = allocation.get("quantity")
-                if offer_id is not None and quantity is not None and quantity > 0:
-                    draft_items.append({
-                        "offer_id": int(offer_id),
-                        "quantity": int(quantity),
-                    })
+                append_item(offer_id, quantity, product_id_from(allocation, value))
         else:
             selected_offer = value.get("selected_offer")
             if selected_offer:
                 offer_id = selected_offer.get("offer_id") or selected_offer.get("id")
                 quantity = value.get("requested_quantity") or value.get("quantity") or selected_offer.get("quantity") or 1
-                if offer_id is not None and quantity is not None and quantity > 0:
-                    draft_items.append({
-                        "offer_id": int(offer_id),
-                        "quantity": int(quantity),
-                    })
+                append_item(offer_id, quantity, product_id_from(selected_offer, value))
             else:
-                offer_id = value.get("offer_id") or value.get("id")
+                offer_id = value.get("offer_id") or value.get("offerId")
                 quantity = value.get("quantity") or 1
-                if offer_id is not None:
-                    draft_items.append({
-                        "offer_id": int(offer_id),
-                        "quantity": int(quantity),
-                    })
+                append_item(offer_id, quantity, product_id_from(value))
     return draft_items
 
 

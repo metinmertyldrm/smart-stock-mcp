@@ -232,6 +232,117 @@ def prior_plan_draft_plan(message, state):
     }
 
 
+_QUANTITY_WORDS = {
+    "bir": 1,
+    "iki": 2,
+    "üç": 3,
+    "uc": 3,
+    "dört": 4,
+    "dort": 4,
+    "beş": 5,
+    "bes": 5,
+    "altı": 6,
+    "alti": 6,
+    "yedi": 7,
+    "sekiz": 8,
+    "dokuz": 9,
+    "on": 10,
+}
+
+
+def explicit_draft_quantity(message):
+    """Extract one explicit positive `adet/tane` quantity from a draft request."""
+    normalized = (message or "").casefold()
+    matches = re.findall(
+        r"(?<!\w)(\d+)\s*(?:adet(?:i|ini|lik)?|tane(?:si|sini)?)(?!\w)",
+        normalized,
+        re.IGNORECASE,
+    )
+    word_matches = re.findall(
+        r"(?<!\w)(bir|iki|üç|uc|dört|dort|beş|bes|altı|alti|yedi|sekiz|dokuz|on)"
+        r"\s+(?:adet(?:i|ini|lik)?|tane(?:si|sini)?)(?!\w)",
+        normalized,
+        re.IGNORECASE,
+    )
+    quantities = [int(value) for value in matches]
+    quantities.extend(_QUANTITY_WORDS[value.casefold()] for value in word_matches)
+    unique = set(quantities)
+    if len(unique) != 1:
+        return None
+    quantity = unique.pop()
+    return quantity if quantity > 0 else None
+
+
+def contextual_product_draft_plan(message, state):
+    """Create a safe quantity-specific draft plan for one prior product result.
+
+    This is deliberately database-independent: the product ID comes from the
+    authoritative single-product MCP result kept in conversation state.  The
+    marketplace plan then resolves current offers for that ID; no offer ID is
+    copied from model output or hard-coded seed data.
+    """
+    normalized = strip_negated_write_phrases(message)
+    asks_for_draft = (
+        any(term in normalized for term in ("taslak", "taslağ", "draft"))
+        and any(term in normalized for term in ("oluştur", "olustur", "hazırla", "hazirla"))
+    )
+    quantity = explicit_draft_quantity(message)
+    if not asks_for_draft or quantity is None:
+        return None
+
+    product = getattr(state, "last_product", None)
+    reference_id = getattr(state, "last_reference_id", None)
+    reference = state.references.get(reference_id) if reference_id else None
+    if not isinstance(product, dict) or product.get("id") is None:
+        return None
+    if not isinstance(reference, dict) or reference.get("type") not in {
+        "product_list",
+        "replenishment_list",
+    }:
+        return None
+    reference_data = reference.get("data")
+    if not isinstance(reference_data, list) or len(reference_data) != 1:
+        return None
+    reference_product = reference_data[0]
+    if not isinstance(reference_product, dict):
+        return None
+    reference_product_id = (
+        reference_product.get("productId")
+        or reference_product.get("product_id")
+        or reference_product.get("id")
+    )
+    if reference_product_id is None or int(reference_product_id) != int(product["id"]):
+        return None
+
+    return {
+        "type": "execution_plan",
+        "goal": "DRAFT",
+        "steps": [
+            {
+                "id": "step_1",
+                "tool": "create_procurement_plan",
+                "arguments": {
+                    "items": [{
+                        "product_id": int(product["id"]),
+                        "quantity": int(quantity),
+                    }],
+                    "objective": "CHEAPEST",
+                },
+            },
+            {
+                "id": "step_2",
+                "tool": "create_purchase_draft",
+                "arguments": {
+                    "items": {
+                        "$from": "step_1",
+                        "$transform": "plan_to_draft_items",
+                    }
+                },
+            },
+        ],
+    }
+
+
 def _turkish_money(value):
     try:
         rendered = f"{float(value):,.2f}"
@@ -611,7 +722,11 @@ class AgentApplication:
             # Model çağrısı her zaman önce yapılır. Bilinen bir teklif takip isteğinde
             # bozuk JSON güvenli bir read-only MCP planına düşer; diğer istekler normal
             # model onarım akışını kullanır.
-            plan = prior_plan_draft_plan(message, state) or prior_offer_refresh_plan(message, state)
+            plan = (
+                contextual_product_draft_plan(message, state)
+                or prior_plan_draft_plan(message, state)
+                or prior_offer_refresh_plan(message, state)
+            )
             if plan is None:
                 plan = await self.repair_invalid_plan(
                     system_prompt, message, raw, exc, state, conversation_id
@@ -646,15 +761,21 @@ class AgentApplication:
                 "replenishment verisini kullanan güvenli planla doğrulandı."
             )
 
-        # "Buna göre taslak oluştur" means the complete previously computed
-        # procurement plan, never an arbitrary single product selected by the model.
-        safe_draft_plan = prior_plan_draft_plan(message, state)
+        # An explicit follow-up quantity applies to the one authoritative product
+        # in context and takes precedence over a replenishment recommendation or
+        # an older procurement plan.  Otherwise "Buna göre taslak oluştur" means
+        # the complete previously computed procurement plan.
+        contextual_draft = contextual_product_draft_plan(message, state)
+        safe_draft_plan = contextual_draft or prior_plan_draft_plan(message, state)
         if safe_draft_plan is not None and plan != safe_draft_plan:
             plan = safe_draft_plan
             repaired = True
             repair_summary = (
-                "Önceki satın alma planının tamamı güvenli biçimde sipariş "
-                "taslağına dönüştürülecek şekilde plan doğrulandı."
+                "Kullanıcının belirttiği ürün ve miktar güncel marketplace "
+                "planına güvenli biçimde bağlandı."
+                if contextual_draft is not None
+                else "Önceki satın alma planının tamamı güvenli biçimde sipariş "
+                     "taslağına dönüştürülecek şekilde plan doğrulandı."
             )
 
         # A generic product listing does not expose pending incoming quantities.

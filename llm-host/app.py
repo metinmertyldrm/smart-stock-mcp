@@ -53,6 +53,7 @@ from plan_validation import (  # noqa: F401
     WRITE_TOOLS,
     parse_execution_plan,
     remove_json_comments,
+    validate_draft_offer_source,
     validate_plan_against_state,
 )
 from rbac import plan_authorization_violation

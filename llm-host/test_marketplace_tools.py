@@ -87,6 +87,14 @@ class ItemValidationTest(unittest.TestCase):
         self.assertFalse(result["success"])
         self.assertIn("No items provided", result["error"])
 
+    def test_draft_item_requires_expected_product_id(self):
+        result = call("create_purchase_draft", {
+            "items": [{"offer_id": 1, "quantity": 1}],
+        })
+
+        self.assertFalse(result["success"])
+        self.assertIn("product_id", result["error"])
+
 
 class SearchOffersComparisonTest(unittest.TestCase):
     def test_search_offers_returns_totals_and_best_offer_ids(self):

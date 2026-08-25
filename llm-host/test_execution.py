@@ -86,6 +86,31 @@ class OrderToIncomingItemsTest(unittest.TestCase):
             app.order_to_incoming_items({"success": True, "items": []})
 
 
+class PlanToDraftItemsTest(unittest.TestCase):
+    def test_carries_expected_product_id_into_every_draft_item(self):
+        items = app.plan_to_draft_items({
+            "success": True,
+            "items": [{
+                "product_id": 418,
+                "allocations": [
+                    {"offer_id": 9001, "quantity": 1},
+                    {"offer_id": 9002, "quantity": 2},
+                ],
+            }],
+        })
+
+        self.assertEqual(items, [
+            {"product_id": 418, "offer_id": 9001, "quantity": 1},
+            {"product_id": 418, "offer_id": 9002, "quantity": 2},
+        ])
+
+    def test_drops_offer_without_expected_product_instead_of_guessing(self):
+        self.assertEqual(
+            app.plan_to_draft_items([{"id": 418, "quantity": 1}]),
+            [],
+        )
+
+
 class ProcurementChainTest(unittest.TestCase):
     def test_order_chain_registers_expected_stock(self):
         client = FakeMCPClient({
