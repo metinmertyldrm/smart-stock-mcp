@@ -48,6 +48,10 @@ ANSWER_SCHEMA = {
     "required": ["answer"],
     "additionalProperties": False,
 }
+ANSWER_PLACEHOLDERS = {
+    "kısa ve doğal türkçe cevap",
+    "kisa ve dogal turkce cevap",
+}
 
 
 def strip_negated_write_phrases(message):
@@ -60,6 +64,46 @@ def strip_negated_write_phrases(message):
 def has_write_intent(message):
     normalized = strip_negated_write_phrases(message)
     return any(word in normalized for word in WRITE_INTENT_WORDS)
+
+
+def product_replenishment_info_plan(message):
+    """Build a pending-aware read plan for a specific product stock query."""
+    normalized = (message or "").casefold()
+    asks_for_stock_picture = (
+        "mevcut stok" in normalized
+        and any(term in normalized for term in ("bekleyen ikmal", "bekleyen sipariş", "yoldaki ikmal"))
+        and "hedef sto" in normalized
+        and any(term in normalized for term in ("gereken miktar", "kaç tane", "ne kadar"))
+        and any(term in normalized for term in ("göster", "listele", "bilgi"))
+    )
+    if not asks_for_stock_picture:
+        return None
+
+    parts = re.split(r"\s+için\s+", (message or "").strip(), maxsplit=1, flags=re.IGNORECASE)
+    if len(parts) != 2:
+        return None
+    query = parts[0].strip(" .,:;!?")
+    if not query or len(query) > 160:
+        return None
+
+    return {
+        "type": "execution_plan",
+        "goal": "INFO",
+        "steps": [
+            {
+                "id": "step_1",
+                "tool": "search_products",
+                "arguments": {"query": query},
+            },
+            {
+                "id": "step_2",
+                "tool": "calculate_replenishment",
+                "arguments": {
+                    "product_ids": {"$from": "step_1.products.id"},
+                },
+            },
+        ],
+    }
 
 
 def prior_offer_refresh_plan(message, state):
@@ -255,7 +299,11 @@ def structured_answer(raw, fallback):
         parsed = json.loads((raw or "").strip())
         answer = parsed.get("answer") if isinstance(parsed, dict) else None
         if isinstance(answer, str) and answer.strip():
-            return answer.strip()
+            candidate = answer.strip()
+            if candidate.casefold() not in ANSWER_PLACEHOLDERS:
+                return candidate
+            logger.warning("Ollama copied the answer schema placeholder; using safe formatter")
+            return fallback
     except (TypeError, ValueError, json.JSONDecodeError):
         pass
     logger.warning("Ollama final answer was not a valid answer envelope; using safe formatter")
@@ -609,7 +657,24 @@ class AgentApplication:
                 "taslağına dönüştürülecek şekilde plan doğrulandı."
             )
 
-        if permission == "PLAN" and any(s.get("tool") in WRITE_TOOLS for s in plan.get("steps", [])):
+        # A generic product listing does not expose pending incoming quantities.
+        # Force this narrow information request through the authoritative,
+        # pending-aware replenishment calculation even if the model chose a
+        # syntactically valid but insufficient list_products plan.
+        safe_replenishment_info_plan = product_replenishment_info_plan(message)
+        if safe_replenishment_info_plan is not None and plan != safe_replenishment_info_plan:
+            plan = safe_replenishment_info_plan
+            repaired = True
+            repair_summary = (
+                "Ürün bazlı stok sorgusu, bekleyen ikmali de hesaba katan doğrulanmış "
+                "replenishment planıyla düzeltildi."
+            )
+
+        # Audit permission describes the validated plan's real capability. A
+        # read-only plan stays PLAN even when "sipariş" is used informationally.
+        plan_has_write = any(s.get("tool") in WRITE_TOOLS for s in plan.get("steps", []))
+        permission = "FULL" if plan_has_write and (write_intent or confirm_intent) else "PLAN"
+        if permission == "PLAN" and plan_has_write:
             raise HTTPException(403, "Salt okunur istekte yazma işlemi engellendi.")
         self.store.add_message(conversation_id, "user", message)
         execution = await execute_plan(plan, self.client, names, state)
@@ -786,9 +851,9 @@ class AgentApplication:
             "alternativeExplanation": "Zorunlu plan doğrulaması başarılı olduğu için CLARIFY hedefi gerekmedi." if goal != "CLARIFY" else None,
             "confidence": "Doğrulanmış plan" if execution.get("success") else "Belirsiz — plan tamamlanamadı",
             "goalExplanation": f"{plan.get('goal', 'PLAN')} hedefi için {len(plan.get('steps', []))} adımlı operasyon planı uygulandı.",
-            "permissionExplanation": "İstek bilgi alma veya planlama niteliğinde olduğu için değişiklik yapan araçlara izin verilmedi." if permission == "PLAN" else "İstek değişiklik yapan bir işlem içeriyor; kritik adımlar kullanıcı onayı ve host doğrulamasına tabidir.",
-            "permissionSource": "Host yazma-niyeti politikası (WRITE_INTENT_WORDS); kalıcı kural kimliği tanımlanmamış.",
-            "permissionReason": "Mesajda yazma niyeti tespit edildi." if permission == "FULL" else "Mesajda yazma niyeti tespit edilmedi.",
+            "permissionExplanation": "Doğrulanmış plan yalnızca bilgi alma veya planlama araçları içerdiği için değişiklik yapan araçlara izin verilmedi." if permission == "PLAN" else "İstek ve doğrulanmış plan değişiklik yapan bir işlem içeriyor; kritik adımlar kullanıcı onayı ve host doğrulamasına tabidir.",
+            "permissionSource": "Host yazma-niyeti politikası (WRITE_INTENT_WORDS) ve doğrulanmış tool planı; kalıcı kural kimliği tanımlanmamış.",
+            "permissionReason": "Mesajdaki yazma niyeti doğrulanmış plandaki yazma aracıyla eşleşti." if permission == "FULL" else "Doğrulanmış planda değişiklik yapan araç bulunmuyor.",
             "allowedActions": ["Bilgi okuma", "Plan oluşturma"] + (["İzin verilen yazma araçlarını çalıştırma"] if permission == "FULL" else []),
             "blockedActions": [] if permission == "FULL" else ["Sipariş, taslak veya stok kaydı oluşturma/değiştirme"],
             "approvalExplanation": "Kritik yazma işlemi için kullanıcı onayı bekleniyor." if pending else "Bekleyen bir onay adımı yok.",

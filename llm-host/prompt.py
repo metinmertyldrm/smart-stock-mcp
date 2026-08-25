@@ -286,6 +286,7 @@ NON-NEGOTIABLE SAFETY / ROUTING RULES:
 15. If both cached cheapest and fastest procurement plans exist and the user asks to compare them: goal=REASON, steps=[], context_sources=["last_cheapest_plan","last_fastest_plan"]. If missing, retrieve replenishment once and create CHEAPEST and FASTEST plans as REASON steps.
 16. If LAST_REFERENCE has source:search_offers and the user asks to compare the cheapest and fastest prior offers, call search_offers again with its recorded query. This refreshes marketplace data through MCP; goal=REASON.
 17. `answer` must be Turkish. Do not invent tool results or bypass host confirmation rules.
+18. For a named product's current stock + pending incoming + target/remaining need, use INFO: search_products(query=product name), then calculate_replenishment(product_ids={{"$from":"step_1.products.id"}}). list_products alone cannot answer pending incoming quantity.
 
 REFERENCE TRANSFORMS:
 - replenishments_to_items
@@ -304,6 +305,7 @@ KEY EXAMPLES:
 7. "Siparişi onaylıyorum" with PENDING_DRAFT_ID -> goal=ORDER with the exact two-step chain in rule 5.
 8. "Bekleyen siparişleri kontrol et ve teslim edilen ürünleri stoğa ekle" -> goal=RECEIVE with ONLY list_incoming_orders(pending_only=true,ready_only=true); wait for confirmation before receive_orders.
 9. "Toplam bütçe 50.000 TL'yi geçmeyecek şekilde eksik ürünleri tamamla" -> goal=PLAN: calculate_replenishment(arguments={{}}); then create_procurement_plan(items={{"$from":"step_1.replenishments","$transform":"replenishments_to_items"}},objective="CHEAPEST",filters={{"max_total_budget":50000}}).
+10. "Dell Latitude 5440 için mevcut stok, bekleyen ikmal, hedef stok ve kalan ihtiyacı göster" -> goal=INFO: search_products(query="Dell Latitude 5440"); then calculate_replenishment(product_ids={{"$from":"step_1.products.id"}}).
 
 Return only the execution_plan JSON object.
 """

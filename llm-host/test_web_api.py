@@ -12,7 +12,8 @@ from app import CachedProcurementPlan, ConversationState, execute_plan
 from web_api import (AgentApplication, ChatRequest, ConversationStore, FALLBACK_PURPOSE,
                      TOOL_EXPLANATIONS, budget_replenishment_plan, conversation_title,
                      has_write_intent, now, offer_tradeoff_fallback,
-                     prior_plan_draft_plan, safe_value)
+                     prior_plan_draft_plan, product_replenishment_info_plan,
+                     safe_value, structured_answer)
 
 
 class WebApiTest(unittest.TestCase):
@@ -152,6 +153,31 @@ class WebApiTest(unittest.TestCase):
 
         self.assertFalse(has_write_intent(message))
         self.assertEqual(conversation_title(message), "Tedarik Tekliflerini Karşılaştırma")
+
+    def test_product_replenishment_info_uses_pending_aware_calculation(self):
+        plan = product_replenishment_info_plan(
+            "Dell Latitude 5440 için mevcut stok, bekleyen ikmal ve hedef stoğa "
+            "ulaşmak için hâlâ sipariş edilmesi gereken miktarı göster. "
+            "Henüz taslak veya sipariş oluşturma."
+        )
+
+        self.assertEqual(plan["goal"], "INFO")
+        self.assertEqual(
+            [step["tool"] for step in plan["steps"]],
+            ["search_products", "calculate_replenishment"],
+        )
+        self.assertEqual(plan["steps"][0]["arguments"]["query"], "Dell Latitude 5440")
+        self.assertEqual(
+            plan["steps"][1]["arguments"]["product_ids"],
+            {"$from": "step_1.products.id"},
+        )
+
+    def test_answer_schema_placeholder_uses_authoritative_fallback(self):
+        fallback = "Dell Latitude 5440 için kalan ihtiyaç 3 adettir."
+
+        answer = structured_answer('{"answer":"Kısa ve doğal Türkçe cevap"}', fallback)
+
+        self.assertEqual(answer, fallback)
 
     def test_confirm_without_pending_draft(self):
         agent = AgentApplication(AsyncMock(), AsyncMock(), self.store)
@@ -303,6 +329,65 @@ class WebApiTest(unittest.TestCase):
         reference = state.references[state.last_reference_id]
         self.assertEqual(reference["source_tool"], "search_offers")
         self.assertEqual(reference["data"]["hesaplanan_karsilastirma"]["cheapestOfferId"], 5)
+
+    def test_informational_order_word_is_downgraded_to_read_only_permission(self):
+        conversation = self.store.create("owner", "İkmal bilgisi")
+        client = AsyncMock()
+        client.list_tools.return_value = [
+            SimpleNamespace(name="search_products"),
+            SimpleNamespace(name="calculate_replenishment"),
+        ]
+        llm = Mock()
+        llm.generate.side_effect = [
+            '{"type":"execution_plan","goal":"INFO","steps":['
+            '{"id":"step_1","tool":"list_products","arguments":{}}]}',
+            '{"answer":"Kısa ve doğal Türkçe cevap"}',
+        ]
+        agent = AgentApplication(client, llm, self.store)
+        execution = {
+            "success": True,
+            "results": {
+                "step_1": {
+                    "success": True,
+                    "count": 1,
+                    "products": [{"id": 2, "name": "Dell Latitude 5440"}],
+                },
+                "step_2": {
+                    "success": True,
+                    "count": 1,
+                    "replenishments": [{
+                        "productId": 2,
+                        "productName": "Dell Latitude 5440",
+                        "stockQuantity": 1,
+                        "minimumStock": 3,
+                        "targetStock": 5,
+                        "pendingIncomingQuantity": 1,
+                        "replenishmentQuantityNeeded": 3,
+                    }],
+                },
+            },
+        }
+        execution["last_result"] = execution["results"]["step_2"]
+
+        with patch("web_api.execute_plan", new=AsyncMock(return_value=execution)):
+            import asyncio
+            response = asyncio.run(agent.chat(
+                conversation["id"],
+                "Dell Latitude 5440 için mevcut stok, bekleyen ikmal ve hedef stoğa "
+                "ulaşmak için hâlâ sipariş edilmesi gereken miktarı göster. "
+                "Henüz taslak veya sipariş oluşturma.",
+                "owner",
+            ))
+
+        self.assertEqual(response["permissionLevel"], "PLAN")
+        self.assertEqual(
+            [step["tool"] for step in response["plan"]["steps"]],
+            ["search_products", "calculate_replenishment"],
+        )
+        self.assertIn("Dell Latitude 5440", response["finalAnswer"])
+        self.assertIn("Bekleyen Sipariş: 1", response["finalAnswer"])
+        self.assertIn("Alınması Gereken Miktar: 3", response["finalAnswer"])
+        self.assertNotIn("Kısa ve doğal Türkçe cevap", response["finalAnswer"])
 
     def test_offer_tradeoff_followup_runs_ollama_mcp_and_finalizer(self):
         conversation = self.store.create("owner", "Teklif Karşılaştırma")
