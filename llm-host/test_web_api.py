@@ -94,6 +94,25 @@ class WebApiTest(unittest.TestCase):
             },
         }])
 
+    def test_followup_draft_accepts_natural_turkish_accusative(self):
+        state = ConversationState()
+        state.last_plan = {
+            "success": True,
+            "items": [{"allocations": [{"offer_id": 9, "quantity": 1}]}],
+        }
+
+        plan = prior_plan_draft_plan(
+            "Bu planın tamamı için satın alma taslağı oluştur. "
+            "Henüz siparişi onaylama.",
+            state,
+        )
+
+        self.assertEqual(plan["goal"], "DRAFT")
+        self.assertEqual(
+            plan["steps"][0]["arguments"]["items"]["$from_context"],
+            "last_plan",
+        )
+
     def test_offer_tradeoff_has_focused_safe_fallback(self):
         result = {
             "offers": [

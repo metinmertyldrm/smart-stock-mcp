@@ -29,7 +29,7 @@ from prompt import get_reasoning_prompt
 
 WRITE_TOOLS = {"create_purchase_draft", "place_order", "create_incoming_order",
                "create_incoming_orders", "receive_order", "receive_orders"}
-WRITE_INTENT_WORDS = ("sipariş", "taslak", "satın al", "oluştur", "draft", "order",
+WRITE_INTENT_WORDS = ("sipariş", "taslak", "taslağ", "satın al", "oluştur", "draft", "order",
                       "stoğa al", "stoga al", "teslim al", "receive")
 NEGATED_WRITE_PHRASES = (
     "henüz sipariş oluşturma",
@@ -152,7 +152,7 @@ def prior_plan_draft_plan(message, state):
     """Convert the complete previous procurement plan into a draft."""
     normalized = strip_negated_write_phrases(message)
     asks_for_draft = (
-        "taslak" in normalized
+        any(term in normalized for term in ("taslak", "taslağ", "draft"))
         and any(term in normalized for term in ("oluştur", "olustur", "hazırla", "hazirla"))
     )
     if not asks_for_draft:
@@ -323,6 +323,12 @@ class ConversationStore:
             created_at TEXT NOT NULL,
             FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
           );
+          CREATE TABLE IF NOT EXISTS conversation_state (
+            conversation_id TEXT PRIMARY KEY,
+            last_plan_json TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+          );
         """)
         self.db.commit()
 
@@ -382,8 +388,46 @@ class ConversationStore:
                 return response["pendingDraftId"]
         return None
 
+    def last_plan(self, conversation_id):
+        """Return the last successful procurement plan persisted for a chat."""
+        row = self.db.execute(
+            "SELECT last_plan_json FROM conversation_state WHERE conversation_id=?",
+            (conversation_id,),
+        ).fetchone()
+        if not row or not row["last_plan_json"]:
+            return None
+        try:
+            value = json.loads(row["last_plan_json"])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            logger.warning("Persisted procurement plan is invalid conversation_id=%s", conversation_id)
+            return None
+        return value if isinstance(value, dict) else None
+
+    def save_last_plan(self, conversation_id, plan):
+        """Persist the full plan used by a later draft follow-up.
+
+        The public decision journal intentionally truncates nested tool payloads,
+        so it cannot safely be used as the source for a later write operation.
+        Keep this server-owned context separately instead.
+        """
+        if not isinstance(plan, dict) or plan.get("success") is not True:
+            return
+        timestamp = now()
+        self.db.execute(
+            """
+            INSERT INTO conversation_state(conversation_id,last_plan_json,updated_at)
+            VALUES(?,?,?)
+            ON CONFLICT(conversation_id) DO UPDATE SET
+              last_plan_json=excluded.last_plan_json,
+              updated_at=excluded.updated_at
+            """,
+            (conversation_id, json.dumps(plan, ensure_ascii=False), timestamp),
+        )
+        self.db.commit()
+
     def delete(self, conversation_id, owner_id):
         self._owned(conversation_id, owner_id)
+        self.db.execute("DELETE FROM conversation_state WHERE conversation_id=?", (conversation_id,))
         self.db.execute("DELETE FROM messages WHERE conversation_id=?", (conversation_id,))
         self.db.execute("DELETE FROM conversations WHERE id=?", (conversation_id,))
         self.db.commit()
@@ -489,6 +533,8 @@ class AgentApplication:
         state = self.states.setdefault(conversation_id, ConversationState())
         if state.pending_draft_id is None:
             state.pending_draft_id = self.store.pending_draft(conversation_id)
+        if state.last_plan is None:
+            state.last_plan = self.store.last_plan(conversation_id)
         state.history = self.store.history(conversation_id)
         state.last_user_message = message
         normalized = strip_negated_write_phrases(message)
@@ -618,6 +664,7 @@ class AgentApplication:
                 if not isinstance(result, dict) or result.get("success") is False:
                     continue
                 state.last_plan = result
+                self.store.save_last_plan(conversation_id, result)
                 arguments = resolve_step_arguments(step.get("arguments", {}), execution["results"], state)
                 cached_plan = CachedProcurementPlan(
                     objective=arguments.get("objective", "CHEAPEST"),

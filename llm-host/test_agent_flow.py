@@ -80,6 +80,71 @@ class ExecutionRepairTest(unittest.TestCase):
         self.assertTrue(all(step["status"] == "success" for step in response["trace"]))
 
 
+class PersistedPlanFollowupTest(unittest.TestCase):
+    """A plan-to-draft follow-up must survive loss of process-local state."""
+
+    def test_followup_draft_restores_the_complete_plan_after_host_restart(self):
+        procurement = {
+            "success": True,
+            "complete": False,
+            "items": [{
+                "product_id": 2,
+                "product_name": "Dell Latitude 5440",
+                "required_quantity": 4,
+                "fulfilled_quantity": 1,
+                "missing_quantity": 3,
+                "complete": False,
+                "allocations": [{"offer_id": 9, "quantity": 1}],
+                "total_cost": 28500.0,
+            }],
+            "overall_total": 28500.0,
+        }
+        client = FakeMCPClient({
+            "list_low_stock": {
+                "success": True,
+                "products": [{"id": 2, "name": "Dell Latitude 5440"}],
+            },
+            "create_procurement_plan": procurement,
+            "create_purchase_draft": {
+                "success": True,
+                "id": 77,
+                "totalCost": 28500.0,
+                "status": "PENDING",
+                "items": [],
+            },
+        })
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "restart.db")
+            first_store = web_api.ConversationStore(path)
+            first_agent = web_api.AgentApplication(client, ScriptedLLM(VALID_PLAN), first_store)
+            first_response = run(first_agent.chat("c1", "kritik ürünler için plan hazırla"))
+            self.assertTrue(first_response["succeeded"])
+            first_store.close()
+
+            restarted_store = web_api.ConversationStore(path)
+            try:
+                restarted_agent = web_api.AgentApplication(
+                    client,
+                    ScriptedLLM(INVALID_PLAN),
+                    restarted_store,
+                )
+                response = run(restarted_agent.chat(
+                    "c1",
+                    "Bu planın tamamı için satın alma taslağı oluştur. "
+                    "Henüz siparişi onaylama.",
+                ))
+            finally:
+                restarted_store.close()
+
+        self.assertTrue(response["succeeded"])
+        self.assertEqual(response["pendingDraftId"], 77)
+        self.assertEqual(client.calls[-1], (
+            "create_purchase_draft",
+            {"items": [{"offer_id": 9, "quantity": 1}]},
+        ))
+
+
 class TraceStatusTest(unittest.TestCase):
     """Regresyon: başarısız ve hiç çalışmamış adımlar 'Başarılı' görünüyordu."""
 
