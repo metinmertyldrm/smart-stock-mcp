@@ -14,6 +14,7 @@ import hmac
 import os
 import re
 import secrets
+from contextlib import contextmanager
 import sqlite3
 import uuid
 from dataclasses import dataclass
@@ -177,10 +178,22 @@ class IdentityStore:
                 """
             )
 
+    @contextmanager
     def _connect(self):
+        """Her islem icin baglanti acar ve KAPATIR.
+
+        `with sqlite3.connect(...) as db` yalnizca islemi (commit/rollback)
+        yonetir, baglantiyi kapatmaz. Kapanmayan baglanti dosya kilidini
+        tutuyor; Windows'ta veritabani dosyasi silinemiyor (WinError 32) ve
+        es zamanli istekte "database is locked" riski doguyor.
+        """
         connection = sqlite3.connect(self.path, timeout=5)
         connection.row_factory = sqlite3.Row
-        return connection
+        try:
+            with connection:          # islem siniri: commit ya da rollback
+                yield connection
+        finally:
+            connection.close()        # dosya kilidi birakilir
 
     @staticmethod
     def _identity(row: sqlite3.Row) -> UserIdentity:

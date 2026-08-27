@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import os
 import secrets
+from contextlib import contextmanager
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -145,10 +146,22 @@ class SessionStore:
                 db.execute("ALTER TABLE sessions ADD COLUMN csrf_hash TEXT")
             db.execute("CREATE INDEX IF NOT EXISTS sessions_user_id ON sessions(user_id)")
 
+    @contextmanager
     def _connect(self):
+        """Her islem icin baglanti acar ve KAPATIR.
+
+        `with sqlite3.connect(...) as db` yalnizca islemi (commit/rollback)
+        yonetir, baglantiyi kapatmaz. Kapanmayan baglanti dosya kilidini
+        tutuyor; Windows'ta veritabani dosyasi silinemiyor (WinError 32) ve
+        es zamanli istekte "database is locked" riski doguyor.
+        """
         connection = sqlite3.connect(self.path, timeout=5)
         connection.row_factory = sqlite3.Row
-        return connection
+        try:
+            with connection:          # islem siniri: commit ya da rollback
+                yield connection
+        finally:
+            connection.close()        # dosya kilidi birakilir
 
     def create(self, *, user_id: str | None = None, with_csrf: bool = False) -> dict[str, str]:
         token, owner_id, created_at, expires_at = new_session_credentials(self.ttl_seconds)

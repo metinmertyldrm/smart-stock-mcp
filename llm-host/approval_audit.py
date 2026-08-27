@@ -7,6 +7,7 @@ without duplicating or weakening the stock-service transaction boundary.
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 import sqlite3
 from datetime import datetime, timezone
 
@@ -43,10 +44,22 @@ class DraftApprovalAuditStore:
                 """
             )
 
+    @contextmanager
     def _connect(self):
+        """Her islem icin baglanti acar ve KAPATIR.
+
+        `with sqlite3.connect(...) as db` yalnizca islemi (commit/rollback)
+        yonetir, baglantiyi kapatmaz. Kapanmayan baglanti dosya kilidini
+        tutuyor; Windows'ta veritabani dosyasi silinemiyor (WinError 32) ve
+        es zamanli istekte "database is locked" riski doguyor.
+        """
         connection = sqlite3.connect(self.path, timeout=5)
         connection.row_factory = sqlite3.Row
-        return connection
+        try:
+            with connection:          # islem siniri: commit ya da rollback
+                yield connection
+        finally:
+            connection.close()        # dosya kilidi birakilir
 
     def record_created(self, draft_id: int, identity) -> dict:
         timestamp = now()
