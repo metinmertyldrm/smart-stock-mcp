@@ -283,10 +283,11 @@ NON-NEGOTIABLE SAFETY / ROUTING RULES:
 12. Current-plan references use {{"$from":"step_id.path"}}. Conversation context uses {{"$from_context":"name.path"}}. Never put last_reference/last_plan/etc. inside `$from`.
 13. Valid context roots: last_plan,last_cheapest_plan,last_fastest_plan,last_product,last_replenishment,last_reference,pending_draft_id,pending_receive_ids. Only declare context_sources that actually exist in CONTEXT.
 14. calculate_replenishment/get_stock_replenishment_needed results expose `replenishments`; product listing/search tools expose `products`.
-15. If both cached cheapest and fastest procurement plans exist and the user asks to compare them: goal=REASON, steps=[], context_sources=["last_cheapest_plan","last_fastest_plan"]. If missing, retrieve replenishment once and create CHEAPEST and FASTEST plans as REASON steps.
+15. If both cached cheapest and fastest procurement plans exist and the user asks to compare them: goal=REASON, steps=[], context_sources=["last_cheapest_plan","last_fastest_plan"]. If missing, retrieve replenishment once and create CHEAPEST and FASTEST plans as REASON steps. STOP THERE: the two procurement plans ARE the comparison and the host computes the cost/delivery differences in code. Never append compare_offers to this chain.
 16. If LAST_REFERENCE has source:search_offers and the user asks to compare the cheapest and fastest prior offers, call search_offers again with its recorded query. This refreshes marketplace data through MCP; goal=REASON.
 17. `answer` must be Turkish. Do not invent tool results or bypass host confirmation rules.
 18. For a named product's current stock + pending incoming + target/remaining need, use INFO: search_products(query=product name), then calculate_replenishment(product_ids={{"$from":"step_1.products.id"}}). list_products alone cannot answer pending incoming quantity.
+19b. compare_offers ranks offers for EXACTLY ONE product: product_id and quantity are single integers, and every filter (min_rating, max_delivery_days, max_shipping_cost) is a single number. Never pass arrays, and never pass an empty array for a filter you do not need -- omit it. For several products at once use create_procurement_plan, not compare_offers.
 19. Never write literal offer IDs into create_purchase_draft. Draft items must always use plan_to_draft_items from create_procurement_plan or a server-owned prior procurement plan. An explicit user quantity overrides replenishment recommendations; never replace "1 adet" with the calculated shortage.
 
 REFERENCE TRANSFORMS:

@@ -71,5 +71,42 @@ class DecisionJournalPromptTest(unittest.TestCase):
         self.assertIn("Siparişi onaylıyorum", prompt)
 
 
+class OfferComparisonRuleTest(unittest.TestCase):
+    """27.08 ölçümü: plan karşılaştırma zincirine gereksiz compare_offers ekleniyordu.
+
+    Model iki create_procurement_plan (CHEAPEST + FASTEST) ürettikten sonra
+    dördüncü adım olarak `compare_offers(product_id=[2,5], quantity=[], ...)`
+    çağırdı; araç tek ürün için tasarlandığından şema reddetti
+    ("[] is not of type 'integer'") ve senaryo düştü. Host tarafında
+    düzeltilemez: doğru davranış zinciri dördüncü adıma hiç götürmemek.
+    """
+
+    TOOL = SimpleNamespace(
+        name="compare_offers",
+        description="Compare marketplace offers for exactly one product.",
+        inputSchema={"type": "object", "properties": {}},
+    )
+
+    def prompt(self):
+        return get_execution_plan_prompt([self.TOOL])
+
+    def test_comparison_chain_stops_after_the_two_plans(self):
+        prompt = self.prompt()
+
+        self.assertIn("Never append compare_offers to this chain", prompt)
+        self.assertIn("the host computes the cost/delivery", prompt)
+
+    def test_compare_offers_is_documented_as_single_product(self):
+        prompt = self.prompt()
+
+        self.assertIn("EXACTLY ONE product", prompt)
+        self.assertIn("Never pass arrays", prompt)
+
+    def test_empty_filter_arrays_are_forbidden(self):
+        """Model kullanmadığı filtreleri `[]` ile dolduruyordu."""
+        self.assertIn("never pass an empty array for a filter you do not need",
+                      self.prompt())
+
+
 if __name__ == "__main__":
     unittest.main()
