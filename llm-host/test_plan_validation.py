@@ -148,6 +148,59 @@ class GoalRuleTest(unittest.TestCase):
                 {"id": "step_1", "tool": "list_products", "params": {}}]))
 
 
+class RedundantPlanComparisonTest(unittest.TestCase):
+    ITEMS = [{"product_id": 2, "quantity": 8}, {"product_id": 5, "quantity": 30}]
+
+    def plan(self, *, goal="REASON", second_items=None, objectives=("CHEAPEST", "FASTEST")):
+        return {
+            "type": "execution_plan",
+            "goal": goal,
+            "steps": [
+                {"id": "step_1", "tool": "calculate_replenishment", "arguments": {}},
+                {"id": "step_2", "tool": "create_procurement_plan", "arguments": {
+                    "items": self.ITEMS, "objective": objectives[0],
+                }},
+                {"id": "step_3", "tool": "create_procurement_plan", "arguments": {
+                    "items": self.ITEMS if second_items is None else second_items,
+                    "objective": objectives[1],
+                }},
+                {"id": "step_4", "tool": "compare_offers", "arguments": {
+                    "product_id": [2, 5], "quantity": [],
+                }},
+            ],
+        }
+
+    def test_drops_trailing_offer_comparison_for_matching_cheapest_and_fastest_plans(self):
+        original = self.plan()
+
+        normalized = app.normalize_redundant_plan_comparison(original)
+
+        self.assertEqual(
+            [step["tool"] for step in normalized["steps"]],
+            ["calculate_replenishment", "create_procurement_plan", "create_procurement_plan"],
+        )
+        self.assertEqual(len(original["steps"]), 4, "normalization must not mutate its input")
+
+    def test_keeps_single_product_offer_comparison(self):
+        plan = {"goal": "REASON", "steps": [{
+            "id": "step_1", "tool": "compare_offers",
+            "arguments": {"product_id": 2, "quantity": 8},
+        }]}
+        self.assertIs(app.normalize_redundant_plan_comparison(plan), plan)
+
+    def test_keeps_comparison_when_procurement_item_sets_differ(self):
+        plan = self.plan(second_items=[{"product_id": 2, "quantity": 8}])
+        self.assertIs(app.normalize_redundant_plan_comparison(plan), plan)
+
+    def test_keeps_comparison_without_cheapest_and_fastest_pair(self):
+        plan = self.plan(objectives=("CHEAPEST", "BALANCED"))
+        self.assertIs(app.normalize_redundant_plan_comparison(plan), plan)
+
+    def test_keeps_comparison_for_non_reason_goal(self):
+        plan = self.plan(goal="PLAN")
+        self.assertIs(app.normalize_redundant_plan_comparison(plan), plan)
+
+
 class ReceiveGoalTest(unittest.TestCase):
     """Teslim alma hem okuma hem yazma içerir; INFO salt okunur olduğu için
     bu akışın kendi hedefi var."""

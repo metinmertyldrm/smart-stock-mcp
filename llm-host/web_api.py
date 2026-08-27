@@ -18,10 +18,11 @@ from pydantic import BaseModel, Field
 from app import (MARKETPLACE_SERVER_PATH, STOCK_SERVER_PATH, CachedProcurementPlan,
                  ConversationState, clean_tool_results_for_reasoning, execute_plan,
                  format_final_answer, format_order_confirmation,
+                 format_plan_comparison_fallback,
                  format_procurement_plan, format_purchase_draft, format_receive_proposal,
                  format_received_orders,
                  build_repair_instruction, get_execution_plan_prompt, is_plan_valid,
-                 parse_execution_plan,
+                 normalize_redundant_plan_comparison, parse_execution_plan,
                  resolve_step_arguments, validate_plan_against_state)
 from llm import LLMService
 from mcp_client import MCPClient
@@ -717,6 +718,14 @@ class AgentApplication:
         repair_summary = None
         try:
             plan = parse_execution_plan(raw)
+            normalized_plan = normalize_redundant_plan_comparison(plan)
+            if normalized_plan != plan:
+                plan = normalized_plan
+                repaired = True
+                repair_summary = (
+                    "En ucuz ve en hızlı plan zaten tam karşılaştırmayı sağladığı için "
+                    "gereksiz tek-ürün compare_offers adımı kaldırıldı."
+                )
             validate_plan_against_state(plan, state)
         except ValueError as exc:
             # Model çağrısı her zaman önce yapılır. Bilinen bir teklif takip isteğinde
@@ -887,7 +896,9 @@ class AgentApplication:
                 json_mode=ANSWER_SCHEMA,
                 num_predict=512,
             )
-            fallback = offer_tradeoff_fallback(message, final) or (
+            fallback = offer_tradeoff_fallback(message, final) or format_plan_comparison_fallback(
+                reasoning_data
+            ) or (
                 format_final_answer(final, last_tool)
                 if last_tool
                 else format_final_answer(reasoning_data)
@@ -1017,6 +1028,7 @@ class AgentApplication:
                 )},
             ], json_mode=True)
             repaired = parse_execution_plan(repaired_raw)
+            repaired = normalize_redundant_plan_comparison(repaired)
             validate_plan_against_state(repaired, state)
             return repaired
         except Exception:
@@ -1085,6 +1097,7 @@ class AgentApplication:
                 {"role": "user", "content": build_repair_instruction(message, plan, execution, plan.get("goal", "").upper())},
             ], json_mode=True)
             repaired = parse_execution_plan(repaired_raw)
+            repaired = normalize_redundant_plan_comparison(repaired)
             validate_plan_against_state(repaired, state)
         except Exception:
             logger.exception("Plan repair could not be parsed conversation_id=%s", conversation_id)

@@ -61,6 +61,15 @@ class ComparisonTest(unittest.TestCase):
         self.assertIn("30960", prompt)
         self.assertIn("ARİTMETİK YAPMA", prompt)
 
+    def test_safe_formatter_uses_host_computed_comparison(self):
+        answer = app.format_plan_comparison_fallback(self.cleaned)
+
+        self.assertIn("En ucuz plan", answer)
+        self.assertIn("676.700,00 TL", answer)
+        self.assertIn("30.960,00 TL daha ucuz", answer)
+        self.assertIn("En hızlı plan", answer)
+        self.assertIn("3 gün daha hızlı", answer)
+
 
 class ComparisonEdgeCaseTest(unittest.TestCase):
     def test_single_plan_has_metrics_but_no_difference(self):

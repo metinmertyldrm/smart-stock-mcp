@@ -51,6 +51,7 @@ from plan_validation import (  # noqa: F401
     ALLOWED_CONTEXT_SOURCES,
     INFO_TOOLS,
     WRITE_TOOLS,
+    normalize_redundant_plan_comparison,
     parse_execution_plan,
     remove_json_comments,
     validate_draft_offer_source,
@@ -97,6 +98,7 @@ async def execute_plan(plan, client, available_tool_names, state=None):
 _runtime.ALLOWED_CONTEXT_SOURCES = ALLOWED_CONTEXT_SOURCES
 _runtime.INFO_TOOLS = INFO_TOOLS
 _runtime.parse_execution_plan = parse_execution_plan
+_runtime.normalize_redundant_plan_comparison = normalize_redundant_plan_comparison
 _runtime.remove_json_comments = remove_json_comments
 _runtime.validate_plan_against_state = validate_plan_against_state
 
