@@ -12,6 +12,7 @@ export {TracePanel} from '../components/DecisionJournal';
 
 const prompts=['Stokta olmayan ürünleri bul ve en ekonomik satın alma planını hazırla.','Toplam bütçe 50.000 TL\'yi geçmeyecek şekilde eksik ürünleri tamamla.','Stokta azalan ürünler için en ucuz tekliflerden taslak sipariş oluştur.','Bekleyen siparişleri kontrol et ve teslim edilen ürünleri stoğa ekle.','En ucuz ve en hızlı planı karşılaştır.'];
 const conversationKey=['ai-conversations'];
+type OptimisticChatMessage=ChatMessage&{clientStartedAt:number;delivery:'sending'|'failed'};
 function groupLabel(date:string){const day=new Date(date);const today=new Date();const diff=Math.floor((new Date(today.getFullYear(),today.getMonth(),today.getDate()).getTime()-new Date(day.getFullYear(),day.getMonth(),day.getDate()).getTime())/86400000);return diff===0?'Bugün':diff===1?'Dün':diff<7?'Son 7 gün':'Daha eski'}
 
 export function AiPage(){
@@ -19,6 +20,7 @@ export function AiPage(){
   const initial=new URLSearchParams(location.search).get('conversation');
   const [selected,setSelected]=useState<string|null>(initial);
   const [message,setMessage]=useState('');
+  const [optimisticMessage,setOptimisticMessage]=useState<OptimisticChatMessage|null>(null);
   const [historyOpen,setHistoryOpen]=useState(false);
   const [traceOpen,setTraceOpen]=useState(false);
   const input=useRef<HTMLTextAreaElement>(null);
@@ -28,16 +30,19 @@ export function AiPage(){
   const conversations=useQuery({queryKey:conversationKey,queryFn:endpoints.conversations});
   const detail=useQuery({queryKey:['ai-conversation',selected],queryFn:()=>endpoints.conversation(selected!),enabled:!!selected});
   const messages=detail.data?.messages||[];
+  const optimisticVisible=optimisticMessage&&((!optimisticMessage.conversationId&&!selected)||optimisticMessage.conversationId===selected)?optimisticMessage:null;
+  const displayedMessages=optimisticVisible?[...messages,optimisticVisible]:messages;
+  const responsePending=optimisticVisible?.delivery==='sending';
 
   useEffect(()=>{const url=new URL(location.href);if(selected){url.searchParams.set('conversation',selected)}else{url.searchParams.delete('conversation')}history.replaceState({},'',url)},[selected]);
-  useEffect(()=>{const node=messageList.current;if(node&&shouldFollow.current)node.scrollTo({top:node.scrollHeight})},[messages.length]);
+  useEffect(()=>{const node=messageList.current;if(node&&shouldFollow.current)node.scrollTo?.({top:node.scrollHeight})},[displayedMessages.length,responsePending]);
 
-  const refresh=(id=selected)=>{queryClient.invalidateQueries({queryKey:conversationKey});if(id)queryClient.invalidateQueries({queryKey:['ai-conversation',id]});[keys.products,keys.low,keys.out,keys.drafts,keys.incoming,keys.marketOrders].forEach(k=>queryClient.invalidateQueries({queryKey:k}))};
+  const refresh=async(id=selected)=>{const updates=[queryClient.invalidateQueries({queryKey:conversationKey}),...[keys.products,keys.low,keys.out,keys.drafts,keys.incoming,keys.marketOrders].map(k=>queryClient.invalidateQueries({queryKey:k}))];if(id)updates.push(queryClient.invalidateQueries({queryKey:['ai-conversation',id]}));await Promise.all(updates)};
   const create=useMutation({mutationFn:endpoints.createConversation,onSuccess:c=>{setSelected(c.id);setHistoryOpen(false);queryClient.invalidateQueries({queryKey:conversationKey});setTimeout(()=>input.current?.focus())}});
   const remove=useMutation({mutationFn:endpoints.deleteConversation,onSuccess:()=>{setSelected(null);queryClient.invalidateQueries({queryKey:conversationKey})}});
-  const mutation=useMutation({mutationFn:({id,text}:{id:string;text:string})=>endpoints.chat(id,text),onSuccess:(_,variables)=>{setMessage('');refresh(variables.id)}});
+  const mutation=useMutation({mutationFn:({id,text}:{id:string;text:string})=>endpoints.chat(id,text)});
   const confirmMutation=useMutation({mutationFn:()=>endpoints.confirm(selected!),onSuccess:()=>refresh(selected)});
-  const submit=async()=>{const text=message.trim();if(!text||submitting.current)return;submitting.current=true;shouldFollow.current=true;try{let id=selected;if(!id){const conversation=await create.mutateAsync();id=conversation.id}await mutation.mutateAsync({id,text})}catch{/* Mutation state renders the API error. */}finally{submitting.current=false}};
+  const submit=async()=>{const text=message.trim();if(!text||submitting.current)return;submitting.current=true;shouldFollow.current=true;setMessage('');setOptimisticMessage({id:`client-${Date.now()}-${Math.random()}`,conversationId:selected||'',role:'user',content:text,status:'success',createdAt:new Date().toISOString(),clientStartedAt:Date.now(),delivery:'sending'});let id=selected;try{if(!id){const conversation=await create.mutateAsync();id=conversation.id;setOptimisticMessage(current=>current?{...current,conversationId:id!}:current)}await mutation.mutateAsync({id,text});await refresh(id);setOptimisticMessage(null)}catch{setOptimisticMessage(current=>current?{...current,status:'failed',delivery:'failed'}:current)}finally{submitting.current=false}};
   const latest=[...messages].reverse().find(m=>m.response)?.response;
 
   return <div className="ai-workspace">
@@ -48,12 +53,12 @@ export function AiPage(){
     {(historyOpen||traceOpen)&&<button className="fixed inset-0 z-40 bg-slate-900/30 lg:hidden" aria-label="Panelleri kapat" onClick={()=>{setHistoryOpen(false);setTraceOpen(false)}}/>}
     <ConversationList items={conversations.data?.items||[]} selected={selected} loading={conversations.isLoading} error={conversations.isError} open={historyOpen} onClose={()=>setHistoryOpen(false)} onSelect={id=>{setSelected(id);setHistoryOpen(false);shouldFollow.current=true}} onNew={()=>create.mutate()} onDelete={id=>{if(confirm('Bu sohbet kalıcı olarak silinsin mi?'))remove.mutate(id)}}/>
     <section className="card flex min-h-0 min-w-0 flex-col overflow-hidden !p-0">
-      <div className="border-b px-5 py-3"><h1 className="font-bold">{displayConversationTitle(detail.data?.title||'AI İşlem Merkezi')}</h1>{mutation.isPending&&<p className="mt-1 text-xs text-blue-600" role="status">Yanıt ve sohbet başlığı hazırlanıyor…</p>}</div>
+      <div className="border-b px-5 py-3"><h1 className="font-bold">{displayConversationTitle(detail.data?.title||'AI İşlem Merkezi')}</h1>{responsePending&&<p className="mt-1 text-xs text-blue-600" role="status">Yanıt ve sohbet başlığı hazırlanıyor…</p>}</div>
       <div ref={messageList} className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-5 sm:px-6 [scrollbar-gutter:stable]" onScroll={event=>{const node=event.currentTarget;shouldFollow.current=node.scrollHeight-node.scrollTop-node.clientHeight<80}}>
         {detail.isLoading&&<div className="grid h-full min-h-64 place-items-center"><span className="flex items-center gap-2 text-sm text-slate-500"><Spinner/>Sohbet yükleniyor…</span></div>}
-        {!detail.isLoading&&messages.length===0&&<EmptyChat/>}
-        {messages.map(m=><MessageBubble key={m.id} message={m}/>)}
-        {mutation.isPending&&<div className="flex gap-3 text-sm text-slate-500"><Spinner/>AI yanıtı hazırlanıyor…</div>}
+        {!detail.isLoading&&displayedMessages.length===0&&<EmptyChat/>}
+        {displayedMessages.map(m=><MessageBubble key={m.id} message={m}/>)}
+        {responsePending&&<div className="flex gap-3 text-sm text-slate-500"><Spinner/>AI yanıtı hazırlanıyor…</div>}
         {(mutation.isError||detail.isError)&&<p role="alert" className="rounded-xl bg-red-50 p-4 text-red-700">{errorMessage(mutation.error||detail.error)}</p>}
       </div>
       <Composer message={message} setMessage={setMessage} input={input} submit={submit} pending={mutation.isPending||create.isPending}/>
