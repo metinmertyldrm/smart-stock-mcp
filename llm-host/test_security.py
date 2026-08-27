@@ -1,5 +1,6 @@
 import os
 import sqlite3
+from contextlib import closing
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -107,7 +108,7 @@ class SessionStoreTest(unittest.TestCase):
 
     def test_legacy_session_schema_is_migrated_in_place(self):
         legacy_path = os.path.join(self.directory.name, "legacy.db")
-        with sqlite3.connect(legacy_path) as db:
+        with closing(sqlite3.connect(legacy_path)) as db, db:
             db.executescript(
                 """
                 CREATE TABLE sessions (
@@ -120,7 +121,7 @@ class SessionStoreTest(unittest.TestCase):
                 """
             )
         SessionStore(legacy_path, ttl_seconds=3600)
-        with sqlite3.connect(legacy_path) as db:
+        with closing(sqlite3.connect(legacy_path)) as db, db:
             columns = {row[1] for row in db.execute("PRAGMA table_info(sessions)").fetchall()}
         self.assertIn("user_id", columns)
         self.assertIn("csrf_hash", columns)
@@ -129,7 +130,7 @@ class SessionStoreTest(unittest.TestCase):
         session = self.store.create(user_id="user-123", with_csrf=True)
         token = session["token"]
         csrf = session["csrfToken"]
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             row = db.execute("SELECT token_hash,csrf_hash FROM sessions").fetchone()
         self.assertIsNotNone(row)
         self.assertEqual(row[0], session_token_hash(token))
@@ -150,11 +151,11 @@ class SessionStoreTest(unittest.TestCase):
         session = self.store.create()
         digest = session_token_hash(session["token"])
         expired = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("UPDATE sessions SET expires_at=? WHERE token_hash=?", (expired, digest))
         with self.assertRaisesRegex(SessionError, "Session expired"):
             self.store.owner_for_authorization(f"Bearer {session['token']}")
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             count = db.execute("SELECT COUNT(*) FROM sessions WHERE token_hash=?", (digest,)).fetchone()[0]
         self.assertEqual(count, 0)
 

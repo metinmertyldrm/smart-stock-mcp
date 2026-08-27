@@ -1,5 +1,6 @@
 import os
 import sqlite3
+from contextlib import closing
 import tempfile
 import unittest
 
@@ -58,7 +59,7 @@ class IdentityStoreTest(unittest.TestCase):
     def test_plaintext_password_is_not_persisted(self):
         password = "never-store-this-password"
         self.store.create_user("viewer.one", password, role=ROLE_VIEWER)
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             row = db.execute("SELECT password_salt,password_hash FROM users").fetchone()
         self.assertIsNotNone(row)
         self.assertNotIn(password, row)

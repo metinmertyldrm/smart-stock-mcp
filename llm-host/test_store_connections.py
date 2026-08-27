@@ -9,6 +9,8 @@ Bu testler işletim sisteminden bağımsızdır: gerçek `sqlite3.connect` sarı
 açılan her bağlantı kaydediliyor, işlem bittikten sonra hepsinin kapalı olduğu
 doğrulanıyor. Kapalı bağlantıya erişim `sqlite3.ProgrammingError` fırlatır.
 """
+import ast
+import io
 import os
 import sqlite3
 import tempfile
@@ -112,6 +114,65 @@ class StoreConnectionHygieneTest(unittest.TestCase):
         os.remove(path)
 
         self.assertFalse(os.path.exists(path))
+
+
+class SqliteIdiomGuardTest(unittest.TestCase):
+    """`with sqlite3.connect(...)` deyimi kaynak dosyalarda hiç kalmamalı.
+
+    Aynı hata iki kez yapıldı: önce store'larda (25 tearDown hatası), sonra
+    testlerin kendi doğrulama bağlantılarında (4 hata). Kural okunarak değil,
+    ölçülerek korunmalı — bu yüzden AST üzerinden bakıyoruz.
+
+    İzin verilen kullanımlar:
+      * closing(sqlite3.connect(...))       -> kapanışı garanti eder
+      * self.db = sqlite3.connect(...)      -> uzun ömürlü, close() metodu var
+    """
+
+    HERE = os.path.dirname(os.path.abspath(__file__))
+
+    @staticmethod
+    def is_sqlite_connect(node):
+        return (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "connect"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "sqlite3")
+
+    def offenders(self, tree):
+        found = []
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.With, ast.AsyncWith)):
+                continue
+            for item in node.items:
+                if self.is_sqlite_connect(item.context_expr):
+                    found.append(node.lineno)
+        return found
+
+    def test_no_source_file_opens_sqlite_in_a_bare_with(self):
+        problems = []
+        for name in sorted(os.listdir(self.HERE)):
+            if not name.endswith(".py"):
+                continue
+            source = io.open(os.path.join(self.HERE, name), encoding="utf-8").read()
+            for line in self.offenders(ast.parse(source)):
+                problems.append(f"{name}:{line}")
+
+        self.assertEqual(
+            problems, [],
+            "Bu satırlar bağlantıyı kapatmıyor; closing(sqlite3.connect(...)) kullan: "
+            + ", ".join(problems))
+
+    def test_guard_detects_the_bare_form(self):
+        """Koruma ters yönde de çalışmalı, yoksa sessizce hep geçer."""
+        tree = ast.parse("import sqlite3\nwith sqlite3.connect('x') as db:\n    db.execute('SELECT 1')\n")
+
+        self.assertEqual(self.offenders(tree), [2])
+
+    def test_guard_accepts_the_closing_form(self):
+        tree = ast.parse("import sqlite3\nfrom contextlib import closing\n"
+                         "with closing(sqlite3.connect('x')) as db, db:\n    db.execute('SELECT 1')\n")
+
+        self.assertEqual(self.offenders(tree), [])
 
 
 if __name__ == "__main__":
