@@ -153,7 +153,9 @@ class SqliteIdiomGuardTest(unittest.TestCase):
         for name in sorted(os.listdir(self.HERE)):
             if not name.endswith(".py"):
                 continue
-            source = io.open(os.path.join(self.HERE, name), encoding="utf-8").read()
+            # Kaynak hijyenini denetleyen test kendi dosya tanıtıcısını sızdırmamalı.
+            with io.open(os.path.join(self.HERE, name), encoding="utf-8") as handle:
+                source = handle.read()
             for line in self.offenders(ast.parse(source)):
                 problems.append(f"{name}:{line}")
 
