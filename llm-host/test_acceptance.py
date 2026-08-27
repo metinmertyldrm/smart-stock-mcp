@@ -1,15 +1,13 @@
 """Kabul koşucusunun değerlendirme mantığı (gerçek yığın olmadan test edilir)."""
 import unittest
-from unittest.mock import patch
 
 from test_support import install_optional_stubs
 
 install_optional_stubs()
 
-from acceptance_runner import (SCENARIOS, collect_arguments, evaluate,
-                               reset_acceptance_state, reset_requirement_error,
-                               select_scenarios,
-                               summarize)  # noqa: E402
+from acceptance_runner import (  # noqa: E402
+    SCENARIOS, baseline_problems, collect_arguments, evaluate,
+    required_preconditions, summarize)
 
 
 def response(goal, steps, succeeded=True, answer="cevap"):
@@ -203,63 +201,65 @@ class ScenarioDefinitionTest(unittest.TestCase):
             self.assertIn("expect", scenario)
 
 
-class AcceptanceResetTest(unittest.TestCase):
-    @patch("acceptance_runner.subprocess.run")
-    def test_reset_command_is_executed_and_output_is_captured(self, run):
-        run.return_value.returncode = 0
+class BaselineStateTest(unittest.TestCase):
+    """Kirli veriyle koşmak kodla ilgisi olmayan başarısızlıklar üretir.
 
-        reset_acceptance_state("reset-db", "pending_orders_receive", 2)
+    20.08 koşumunda 9/27 çıktı; düşen senaryoların çoğu önceki manuel testlerin
+    stoğu doldurmuş olmasındandı. Ölçüm, ölçtüğü şeyin geçerli olduğunu önce
+    kendisi söylemeli.
+    """
 
-        run.assert_called_once_with(
-            "reset-db", shell=True, text=True, capture_output=True)
+    PLAN = {"id": "p", "turns": ["x"],
+            "expect": {"tools_required": ["create_procurement_plan"]}}
+    RECEIVE = {"id": "r", "turns": ["x", "y"],
+               "expect": {"tools_required": ["receive_orders"]}}
+    LISTING = {"id": "l", "turns": ["x"],
+               "expect": {"tools_required": ["list_incoming_orders"]}}
+    NO_TOOLS = {"id": "n", "turns": ["x"], "expect": {"tools_required": []}}
 
-    @patch("acceptance_runner.subprocess.run")
-    def test_reset_failure_stops_the_acceptance_run(self, run):
-        run.return_value.returncode = 7
-        run.return_value.stderr = "database refused reset"
-        run.return_value.stdout = ""
+    FULL = {"replenishment": 3, "low_stock": 2, "pending_order": 1, "receivable_order": 1}
+    DRAINED = {"replenishment": 0, "low_stock": 0, "pending_order": 0, "receivable_order": 0}
 
-        with self.assertRaisesRegex(RuntimeError, "database refused reset"):
-            reset_acceptance_state("reset-db", "pending_orders_receive", 1)
+    def test_healthy_baseline_has_no_problems(self):
+        self.assertEqual(baseline_problems(self.FULL, SCENARIOS), [])
 
-    @patch("acceptance_runner.subprocess.run")
-    def test_reset_failure_reports_both_output_streams(self, run):
-        run.return_value.returncode = 3
-        run.return_value.stdout = "psql output"
-        run.return_value.stderr = "psql error"
+    def test_drained_stock_blocks_planning_scenarios(self):
+        problems = baseline_problems(self.DRAINED, [self.PLAN])
 
-        with self.assertRaises(RuntimeError) as raised:
-            reset_acceptance_state("reset-db", "pending_orders_receive", 1)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("replenishment", problems[0])
 
-        self.assertIn("stdout:\npsql output", str(raised.exception))
-        self.assertIn("stderr:\npsql error", str(raised.exception))
+    def test_receive_scenario_needs_a_receivable_order(self):
+        baseline = dict(self.FULL, receivable_order=0)
 
+        problems = baseline_problems(baseline, [self.RECEIVE])
 
-class ScenarioSelectionTest(unittest.TestCase):
-    def test_multiple_only_values_select_multiple_scenarios(self):
-        selected, missing = select_scenarios(
-            ["max_delivery_days", "pending_orders_listing_only"])
+        self.assertEqual(len(problems), 1)
+        self.assertIn("readyOnly", problems[0])
 
-        self.assertEqual(
-            [scenario["id"] for scenario in selected],
-            ["max_delivery_days", "pending_orders_listing_only"])
-        self.assertEqual(missing, set())
+    def test_future_delivery_alone_is_not_enough(self):
+        """Bekleyen sipariş var ama tarihi gelmemiş: teslim alma ölçülemez."""
+        baseline = dict(self.FULL, pending_order=1, receivable_order=0)
 
-    def test_unknown_only_values_are_reported(self):
-        selected, missing = select_scenarios(["max_delivery_days", "does_not_exist"])
+        self.assertTrue(baseline_problems(baseline, [self.RECEIVE]))
 
-        self.assertEqual([scenario["id"] for scenario in selected], ["max_delivery_days"])
-        self.assertEqual(missing, {"does_not_exist"})
+    def test_listing_only_needs_a_pending_order_not_a_ready_one(self):
+        baseline = dict(self.FULL, receivable_order=0)
 
-    def test_write_scenario_requires_reset_command(self):
-        selected, _ = select_scenarios(["pending_orders_receive"])
-        self.assertIn("--reset-command", reset_requirement_error(selected, None))
+        self.assertEqual(baseline_problems(baseline, [self.LISTING]), [])
 
-    def test_default_read_only_selection_does_not_require_reset(self):
-        selected, _ = select_scenarios()
-        self.assertTrue(selected)
-        self.assertFalse(any(scenario.get("writes") for scenario in selected))
-        self.assertIsNone(reset_requirement_error(selected, None))
+    def test_unrelated_scenario_is_not_blocked(self):
+        """--only ile tek senaryo koşarken alakasız ön koşul dayatılmamalı."""
+        self.assertEqual(baseline_problems(self.DRAINED, [self.NO_TOOLS]), [])
+
+    def test_receivable_requirement_subsumes_pending(self):
+        """Aynı eksiği iki kez raporlamak kullanıcıyı yanıltır."""
+        self.assertEqual(required_preconditions([self.RECEIVE]), {"receivable_order"})
+
+    def test_every_scenario_precondition_has_a_message(self):
+        from acceptance_runner import REQUIREMENT_MESSAGES
+        for requirement in required_preconditions(SCENARIOS):
+            self.assertIn(requirement, REQUIREMENT_MESSAGES)
 
 
 if __name__ == "__main__":

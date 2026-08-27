@@ -10,16 +10,15 @@ Kullanım (llm-host klasöründen, venv aktifken):
     python acceptance_runner.py --include-writes   # taslak/sipariş senaryoları da
     python acceptance_runner.py --only draft_then_confirm
 
-Ön koşul: acceptance Spring Boot (8082) ve Ollama (11434) çalışıyor olmalı.
-STOCK_SERVICE_URL=http://localhost:8082 ayarlanmalıdır; uvicorn'a gerek yok.
+Ön koşul: Spring Boot (8081) ve Ollama (11434) çalışıyor olmalı. uvicorn'a gerek yok.
 
-DİKKAT: Yazmalı senaryolar yalnızca izole acceptance veritabanında çalıştırılmalıdır.
+DİKKAT: --include-writes gerçek taslak ve sipariş kaydı oluşturur, stok verisini
+değiştirir. Demo veritabanında çalıştır.
 """
 import argparse
 import asyncio
 import json
 import os
-import subprocess
 import statistics
 import sys
 import tempfile
@@ -278,6 +277,92 @@ def preflight():
     return problems
 
 
+# --------------------------------------------------------------------------
+# Baslangic durumu — olcumun karsilastirilabilir olmasinin sarti
+# --------------------------------------------------------------------------
+
+BASELINE_HINT = (
+    "Kabul kosumu temiz bir veritabani ister. Projede bunun icin hazir bir profil var:\n"
+    "      (bir kereye mahsus)  createdb smart_stock_acceptance\n"
+    "      cd stock-service\n"
+    "      java -jar target/stock-service-0.0.1-SNAPSHOT.jar --spring.profiles.active=acceptance\n"
+    "    Profil ayri bir veritabani kullanir ve her aciliista semayi bastan kurar\n"
+    "    (ddl-auto: create), sonra data.sql + acceptance-data.sql ile tohumlar.\n"
+    "    Demo ornegini once durdur; ikisi de 8081 portunu kullaniyor."
+)
+
+# Hangi arac hangi veriye muhtac. Senaryo listesinden turetiyoruz ki
+# --only ile tek senaryo kosarken alakasiz on kosul dayatilmasin.
+TOOL_REQUIREMENTS = {
+    "create_procurement_plan": "replenishment",
+    "create_purchase_draft": "replenishment",
+    "place_order": "replenishment",
+    "receive_orders": "receivable_order",
+    "receive_order": "receivable_order",
+    "list_incoming_orders": "pending_order",
+}
+
+REQUIREMENT_MESSAGES = {
+    "replenishment": (
+        "Siparis edilmesi gereken urun yok (/api/products/replenishment bos). "
+        "Plan/taslak/siparis senaryolari bu veri olmadan anlamli olcmez."
+    ),
+    "pending_order": (
+        "Bekleyen siparis yok (/api/orders/pending bos). "
+        "Teslim alma senaryolarinin listeleme turu bos doner."
+    ),
+    "receivable_order": (
+        "Teslim alinmaya hazir siparis yok (/api/orders/pending?readyOnly=true bos). "
+        "Teslimat tarihi gelmemis siparisi stoga almak zaten yasak."
+    ),
+}
+
+
+def required_preconditions(scenarios):
+    """Secilen senaryolarin ihtiyac duydugu veri on kosullarini toplar."""
+    needed = set()
+    for scenario in scenarios:
+        for tool in scenario.get("expect", {}).get("tools_required", []):
+            requirement = TOOL_REQUIREMENTS.get(tool)
+            if requirement:
+                needed.add(requirement)
+    # Teslim alma zinciri once listeler; hazir siparis varsa bekleyen de vardir.
+    if "receivable_order" in needed:
+        needed.discard("pending_order")
+    return needed
+
+
+def baseline_problems(baseline, scenarios):
+    """Saf fonksiyon: olculen duruma bakip eksik on kosullari dondurur."""
+    problems = []
+    for requirement in sorted(required_preconditions(scenarios)):
+        if not baseline.get(requirement):
+            problems.append(REQUIREMENT_MESSAGES[requirement])
+    return problems
+
+
+def fetch_baseline(stock_url):
+    """Backend'den senaryolarin dayandigi sayilari ceker."""
+    import requests
+
+    def count(path, params=None):
+        try:
+            response = requests.get(f"{stock_url}{path}", params=params, timeout=(5, 20))
+            response.raise_for_status()
+            payload = response.json()
+            return len(payload) if isinstance(payload, list) else 0
+        except Exception:
+            # Erisim sorunlarini preflight zaten raporluyor; burada 0 sayiyoruz.
+            return 0
+
+    return {
+        "replenishment": count("/api/products/replenishment"),
+        "low_stock": count("/api/products/low-stock"),
+        "pending_order": count("/api/orders/pending"),
+        "receivable_order": count("/api/orders/pending", {"readyOnly": "true"}),
+    }
+
+
 class RecordingLLM:
     """LLMService'i sarar; istek başına harcanan token sayısını kaydeder."""
 
@@ -290,41 +375,7 @@ class RecordingLLM:
         return self.inner.generate(messages)
 
 
-def reset_acceptance_state(command, scenario_id, run_number):
-    """Reset the isolated business database before a selected scenario run."""
-    print(f"  [RESET] {scenario_id} #{run_number}")
-    # This is an explicitly supplied, trusted local operator command. A shell is
-    # intentional so quoted PowerShell paths (including spaces) work on Windows.
-    completed = subprocess.run(command, shell=True, text=True, capture_output=True)
-    if completed.returncode:
-        stdout = completed.stdout.strip() or "(empty)"
-        stderr = completed.stderr.strip() or "(empty)"
-        raise RuntimeError(
-            f"Acceptance reset failed ({completed.returncode})\n"
-            f"stdout:\n{stdout}\nstderr:\n{stderr}")
-
-
-def select_scenarios(only=None, include_writes=False):
-    """Select requested scenarios while preserving their canonical order."""
-    if only:
-        requested = set(only)
-        selected = [scenario for scenario in SCENARIOS if scenario["id"] in requested]
-        missing = requested - {scenario["id"] for scenario in selected}
-        return selected, missing
-    if include_writes:
-        return SCENARIOS, set()
-    return [scenario for scenario in SCENARIOS if not scenario.get("writes")], set()
-
-
-def reset_requirement_error(scenarios, reset_command):
-    """Return an operator-facing error when a write could run without isolation."""
-    if any(scenario.get("writes") for scenario in scenarios) and not reset_command:
-        return ("Yazmalı kabul senaryoları izole bir başlangıç durumu gerektirir.\n"
-                "--reset-command verin; PowerShell örneği README'de bulunuyor.")
-    return None
-
-
-async def run_scenarios(scenarios, runs, verbose=False, reset_command=None):
+async def run_scenarios(scenarios, runs, verbose=False):
     from app import MARKETPLACE_SERVER_PATH, STOCK_SERVER_PATH
     from llm import LLMService
     from mcp_client import MCPClient
@@ -343,8 +394,6 @@ async def run_scenarios(scenarios, runs, verbose=False, reset_command=None):
         for scenario in scenarios:
             scenario_runs = []
             for index in range(runs):
-                if reset_command:
-                    reset_acceptance_state(reset_command, scenario["id"], index + 1)
                 conversation_id = f"acc-{scenario['id']}-{index}-{uuid.uuid4().hex[:6]}"
                 started = time.perf_counter()
                 response = None
@@ -433,23 +482,26 @@ def main():
     parser.add_argument("--runs", type=int, default=3, help="senaryo başına tekrar (varsayılan 3)")
     parser.add_argument("--include-writes", action="store_true",
                         help="taslak/sipariş oluşturan senaryoları da çalıştır (veriyi değiştirir)")
-    parser.add_argument("--only", action="append",
-                        help="yalnızca bu senaryo id'sini çalıştır (birden çok kez verilebilir)")
-    parser.add_argument("--reset-command",
-                        help="her yazmalı denemeden önce çalıştırılacak acceptance DB reset komutu")
+    parser.add_argument("--only", action="append", metavar="SENARYO_ID",
+                        help="yalnızca bu senaryoyu çalıştır (birden fazla kez verilebilir)")
+    parser.add_argument("--allow-dirty-state", action="store_true",
+                        help="veri ön koşulları tutmasa da koş (sonuçlar karşılaştırılabilir olmaz)")
     parser.add_argument("--verbose", action="store_true", help="her koşuda sorunları yazdır")
     parser.add_argument("--json", help="ayrıntılı sonucu bu dosyaya yaz")
     args = parser.parse_args()
 
-    scenarios, missing = select_scenarios(args.only, args.include_writes)
-    if missing:
-        print(f"Bilinmeyen senaryo: {', '.join(sorted(missing))}")
-        return 2
-
-    reset_error = reset_requirement_error(scenarios, args.reset_command)
-    if reset_error:
-        print(reset_error)
-        return 2
+    scenarios = SCENARIOS
+    if args.only:
+        wanted = set(args.only)
+        unknown = wanted - {s["id"] for s in SCENARIOS}
+        if unknown:
+            # Sessizce atlamak, kosmadigi senaryoyu kostu sanmaya yol acar.
+            print(f"Bilinmeyen senaryo: {', '.join(sorted(unknown))}")
+            print(f"Gecerli id'ler: {', '.join(s['id'] for s in SCENARIOS)}")
+            return 2
+        scenarios = [s for s in SCENARIOS if s["id"] in wanted]
+    elif not args.include_writes:
+        scenarios = [s for s in scenarios if not s.get("writes")]
 
     print("Ön kontrol:")
     problems = preflight()
@@ -458,6 +510,31 @@ def main():
         for problem in problems:
             print(f"  · {problem}")
         return 2
+
+    # Kirli veriyle kosmak, kodla ilgisi olmayan basarisizliklar uretir ve
+    # iki kosumun karsilastirilmasini imkansiz kilar. Olcum once durumu soylesin.
+    stock_url = os.getenv("STOCK_SERVICE_URL", "http://localhost:8081")
+    baseline = fetch_baseline(stock_url)
+    print(f"  [VERI] siparis gereken urun: {baseline['replenishment']} · "
+          f"kritik stok: {baseline['low_stock']} · bekleyen siparis: {baseline['pending_order']} "
+          f"(teslime hazir: {baseline['receivable_order']})")
+
+    state_problems = baseline_problems(baseline, scenarios)
+    if state_problems:
+        if args.allow_dirty_state:
+            print("\n  [UYARI] Baslangic durumu eksik, --allow-dirty-state ile devam ediliyor.")
+            print("  Bu kosumun sonuclari onceki kosumlarla karsilastirilamaz.")
+            for problem in state_problems:
+                print(f"    · {problem}")
+        else:
+            print("\nKosu baslatilmadi — baslangic durumu senaryolari olcmeye uygun degil:")
+            for problem in state_problems:
+                print(f"  · {problem}")
+            print()
+            print(BASELINE_HINT)
+            print()
+            print("  Yine de kosmak istiyorsan: --allow-dirty-state")
+            return 2
     print()
 
     print(f"{len(scenarios)} senaryo × {args.runs} tekrar")
@@ -465,8 +542,7 @@ def main():
         print("(yazma senaryoları atlandı; dahil etmek için --include-writes)")
     print()
 
-    results, llm_calls = asyncio.run(run_scenarios(
-        scenarios, args.runs, args.verbose, args.reset_command))
+    results, llm_calls = asyncio.run(run_scenarios(scenarios, args.runs, args.verbose))
     print_report(results, llm_calls)
 
     if args.json:
