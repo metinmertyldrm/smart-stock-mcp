@@ -27,7 +27,7 @@ class LLMServiceTest(unittest.TestCase):
         self.assertFalse(payload["think"])
         self.assertEqual(payload["format"], "json")
         # num_predict/num_ctx artik env ile ayarlanabilir; varsayilanlari dogrula.
-        self.assertEqual(payload["options"]["num_predict"], 256)
+        self.assertEqual(payload["options"]["num_predict"], 1024)
         self.assertEqual(payload["options"]["num_ctx"], 8192)
 
     @patch("llm.requests.post")

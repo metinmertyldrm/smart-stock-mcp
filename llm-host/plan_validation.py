@@ -5,6 +5,7 @@ host-side safety boundary for turning model output into an executable plan.
 """
 import json
 import re
+from copy import deepcopy
 
 
 ALLOWED_CONTEXT_SOURCES = {
@@ -39,6 +40,48 @@ INFO_TOOLS = {
     "list_incoming_orders",
     "list_marketplace_orders",
 }
+
+
+def normalize_redundant_plan_comparison(plan: dict) -> dict:
+    """Drop a redundant trailing ``compare_offers`` from a two-plan comparison.
+
+    ``compare_offers`` is a single-product tool.  For a cheapest-vs-fastest
+    procurement request the two multi-product procurement results are already
+    the complete inputs to the host-side comparison.  Small local models can
+    nevertheless append ``compare_offers`` with array arguments.  Removing
+    only that exact, trailing shape is lossless; all other offer comparisons
+    remain untouched.
+    """
+    if not isinstance(plan, dict) or str(plan.get("goal", "")).upper() != "REASON":
+        return plan
+
+    steps = plan.get("steps")
+    if not isinstance(steps, list) or len(steps) < 3:
+        return plan
+    if not isinstance(steps[-1], dict) or steps[-1].get("tool") != "compare_offers":
+        return plan
+
+    procurement_steps = [
+        step for step in steps[:-1]
+        if isinstance(step, dict) and step.get("tool") == "create_procurement_plan"
+    ]
+    if len(procurement_steps) != 2:
+        return plan
+
+    objectives = {
+        str((step.get("arguments") or {}).get("objective", "")).upper()
+        for step in procurement_steps
+    }
+    if objectives != {"CHEAPEST", "FASTEST"}:
+        return plan
+
+    item_sources = [(step.get("arguments") or {}).get("items") for step in procurement_steps]
+    if item_sources[0] is None or item_sources[0] != item_sources[1]:
+        return plan
+
+    normalized = deepcopy(plan)
+    normalized["steps"] = normalized["steps"][:-1]
+    return normalized
 
 
 def validate_draft_offer_source(steps: list[dict]) -> None:

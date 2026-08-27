@@ -1036,6 +1036,62 @@ def clean_tool_results_for_reasoning(results: dict) -> dict:
     return cleaned
 
 
+def format_plan_comparison_fallback(reasoning_data: dict) -> str | None:
+    """Render host-computed plan differences when the final LLM JSON is invalid."""
+    comparison = (reasoning_data or {}).get("hesaplanan_karsilastirma")
+    if not isinstance(comparison, dict):
+        return None
+    plans = comparison.get("planlar")
+    difference = comparison.get("fark")
+    if not isinstance(plans, dict) or len(plans) < 2 or not isinstance(difference, dict):
+        return None
+
+    def label(step_id):
+        metrics = plans.get(step_id) or {}
+        objective = str(metrics.get("hedef", "")).upper()
+        objective_label = {"CHEAPEST": "En ucuz plan", "FASTEST": "En hızlı plan"}.get(objective)
+        if objective_label:
+            return objective_label
+        inferred = []
+        if step_id == difference.get("daha_ucuz_olan"):
+            inferred.append("En ucuz")
+        if step_id == difference.get("daha_hizli_olan"):
+            inferred.append("hızlı" if inferred else "En hızlı")
+        return " ve en ".join(inferred) + " plan" if inferred else str(step_id)
+
+    def money(value):
+        try:
+            formatted = f"{float(value):,.2f}"
+            return formatted.replace(",", "_").replace(".", ",").replace("_", ".")
+        except (TypeError, ValueError):
+            return str(value)
+
+    lines = ["En ucuz ve en hızlı satın alma planı karşılaştırması:"]
+    for step_id, metrics in plans.items():
+        if not isinstance(metrics, dict):
+            continue
+        details = []
+        if metrics.get("toplam_maliyet") is not None:
+            details.append(f"toplam {money(metrics['toplam_maliyet'])} TL")
+        if metrics.get("en_gec_teslimat_gunu") is not None:
+            details.append(f"en geç {metrics['en_gec_teslimat_gunu']} gün")
+        lines.append(f"- {label(step_id)}: {', '.join(details)}")
+
+    cheaper = difference.get("daha_ucuz_olan")
+    faster = difference.get("daha_hizli_olan")
+    if cheaper is not None and difference.get("maliyet_farki_TL") is not None:
+        cost_line = f"{label(cheaper)}, {money(difference['maliyet_farki_TL'])} TL daha ucuz"
+        if difference.get("maliyet_farki_yuzde") is not None:
+            cost_line += f" (%{difference['maliyet_farki_yuzde']})"
+        lines.append(cost_line + ".")
+    if faster is not None and difference.get("teslimat_farki_gun") is not None:
+        lines.append(
+            f"{label(faster)}, en geç teslimat süresinde "
+            f"{difference['teslimat_farki_gun']} gün daha hızlı."
+        )
+    return "\n".join(lines)
+
+
 # Bir adimin zorunlu koleksiyonu, onceki adimin BOS sonucundan gelebiliyor.
 # Bu teknik bir hata degil, is durumudur: siparis edilecek urun yoktur.
 # Tool'a bos liste gonderip "No items provided." almak kullaniciya hicbir sey anlatmiyor
