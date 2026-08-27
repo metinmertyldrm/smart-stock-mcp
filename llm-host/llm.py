@@ -273,7 +273,7 @@ def _fast_execution_plan(route):
 class LLMService:
     def __init__(self):
         self.url = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
-        self.model = os.getenv("OLLAMA_MODEL", "qwen3:8b")
+        self.model = os.getenv("OLLAMA_MODEL", "qwen3:4b")
         # Ollama varsayilan num_ctx degeri sistem promptumuzdan kucuk olabilir.
         # Asildiginda prompt BASTAN kesilir; ilk kesilen bolum AVAILABLE TOOLS olur.
         self.num_ctx = int(os.getenv("OLLAMA_NUM_CTX", "8192"))

@@ -10,7 +10,11 @@ Kullanım (llm-host klasöründen, venv aktifken):
     python acceptance_runner.py --include-writes   # taslak/sipariş senaryoları da
     python acceptance_runner.py --only draft_then_confirm
 
-Ön koşul: Spring Boot (8081) ve Ollama (11434) çalışıyor olmalı. uvicorn'a gerek yok.
+Ön koşul: kabul ortamı ve Ollama (11434) çalışıyor olmalı; uvicorn'a gerek yok.
+Kabul ortamı en kolay docker compose ile kalkar:
+    docker compose --profile acceptance up -d postgres-acceptance stock-service-acceptance
+    $env:STOCK_SERVICE_URL = "http://localhost:8082"
+Adres STOCK_SERVICE_URL ile ayarlanır; MCP sunucuları bu değişkeni miras alır.
 
 DİKKAT: --include-writes gerçek taslak ve sipariş kaydı oluşturur, stok verisini
 değiştirir. Demo veritabanında çalıştır.
@@ -282,13 +286,16 @@ def preflight():
 # --------------------------------------------------------------------------
 
 BASELINE_HINT = (
-    "Kabul kosumu temiz bir veritabani ister. Projede bunun icin hazir bir profil var:\n"
-    "      (bir kereye mahsus)  createdb smart_stock_acceptance\n"
-    "      cd stock-service\n"
-    "      java -jar target/stock-service-0.0.1-SNAPSHOT.jar --spring.profiles.active=acceptance\n"
-    "    Profil ayri bir veritabani kullanir ve her aciliista semayi bastan kurar\n"
-    "    (ddl-auto: create), sonra data.sql + acceptance-data.sql ile tohumlar.\n"
-    "    Demo ornegini once durdur; ikisi de 8081 portunu kullaniyor."
+    "Kabul kosumu temiz bir veritabani ister. Projede bunun icin hazir bir\n"
+    "    docker compose profili var (ayri Postgres + ayri port, demo verisine dokunmaz):\n"
+    "      docker compose --profile acceptance up -d postgres-acceptance stock-service-acceptance\n"
+    "      $env:STOCK_SERVICE_URL = \"http://localhost:8082\"   # PowerShell\n"
+    "      export STOCK_SERVICE_URL=http://localhost:8082        # bash\n"
+    "    Servis her acilista semayi bastan kurar (ddl-auto: create), sonra\n"
+    "    data.sql + acceptance-data.sql ile tohumlar.\n"
+    "    Docker yoksa elle: kabul veritabanini olustur ve\n"
+    "    java -jar target/stock-service-0.0.1-SNAPSHOT.jar --spring.profiles.active=acceptance\n"
+    "    (bu durumda servis 8081'i kullanir, demo ornegini once durdur)."
 )
 
 # Hangi arac hangi veriye muhtac. Senaryo listesinden turetiyoruz ki
