@@ -277,7 +277,11 @@ class LLMService:
         # Ollama varsayilan num_ctx degeri sistem promptumuzdan kucuk olabilir.
         # Asildiginda prompt BASTAN kesilir; ilk kesilen bolum AVAILABLE TOOLS olur.
         self.num_ctx = int(os.getenv("OLLAMA_NUM_CTX", "8192"))
-        self.num_predict = int(os.getenv("OLLAMA_NUM_PREDICT", "256"))
+        # 27.08 kabul kosumu: compare_cheapest_fastest senaryosunda uc kosumun
+        # ucunde de eval_count == num_predict == 256 olup JSON yarida kesildi
+        # ("Unterminated string"), plan ayristirilamayip CLARIFY donuldu.
+        # Basarili planlar 72-124 token kullaniyor; bu bir TAVAN, maliyeti yok.
+        self.num_predict = int(os.getenv("OLLAMA_NUM_PREDICT", "1024"))
         # Keep network limits configurable, but do not hide prompt/model performance
         # problems behind ever-growing defaults. Slower environments can override them.
         self.connect_timeout = float(os.getenv("OLLAMA_CONNECT_TIMEOUT", "20"))

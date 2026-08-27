@@ -522,6 +522,28 @@ TARGET_ACTIONS = {
 }
 
 
+def coerce_collection_arguments(tool_name: str, arguments: dict) -> dict:
+    """Koleksiyon bekleyen argumana tekil deger geldiyse listeye sarar.
+
+    Model zaman zaman `receive_orders(order_ids=1)` yaziyor; sema dizi bekledigi
+    icin MCP "1 is not of type 'array'" diyor ve istek basarisiz oluyor. Sarmalamak
+    bilgi kaybetmez: kullanicinin kastettigi tek ogeli listedir. Yanlis ARACA giden
+    argumanlar bu muamelenin disinda -- onlari sessizce duzeltmek kullanicinin
+    kisitini kaybettirir, o yuzden onarim dongusune birakiliyor.
+    """
+    key = COLLECTION_ARGUMENTS.get(tool_name)
+    if not key or key not in arguments:
+        return arguments
+
+    value = arguments[key]
+    if value is None or isinstance(value, (list, tuple)):
+        return arguments
+
+    normalized = dict(arguments)
+    normalized[key] = [value]
+    return normalized
+
+
 def detect_empty_input(tool_name: str, arguments: dict, step: dict, plan: dict):
     key = COLLECTION_ARGUMENTS.get(tool_name)
     if not key:
@@ -587,6 +609,7 @@ async def execute_plan(plan: dict, client, available_tool_names: set[str], state
         try:
             arguments = resolve_step_arguments(step.get("arguments", {}), execution_results, state)
             arguments = remove_none_values(arguments)
+            arguments = coerce_collection_arguments(tool_name, arguments)
             empty_reason = detect_empty_input(tool_name, arguments, step, plan)
             if empty_reason:
                 return {
