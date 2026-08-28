@@ -24,7 +24,7 @@ from app import (MARKETPLACE_SERVER_PATH, STOCK_SERVER_PATH, CachedProcurementPl
                  build_repair_instruction, get_execution_plan_prompt, is_plan_valid,
                  normalize_redundant_plan_comparison, parse_execution_plan,
                  resolve_step_arguments, validate_plan_against_state)
-from llm import LLMService
+from llm import LLMService, prepare_inference_messages
 from mcp_client import MCPClient
 from prompt import get_reasoning_prompt
 
@@ -599,10 +599,127 @@ class ConversationStore:
 class ChatRequest(BaseModel):
     conversationId: str = Field(min_length=1, max_length=100)
     message: str = Field(min_length=1, max_length=4000)
+    requestId: str | None = Field(
+        default=None,
+        min_length=8,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
 
 
 class CreateConversationRequest(BaseModel):
     title: str = Field(default="Yeni sohbet", min_length=1, max_length=100)
+
+
+class ChatProgressRegistry:
+    """Own active chat progress and safe cancellation state in one event loop."""
+
+    TERMINAL = {"completed", "failed", "cancelled"}
+
+    def __init__(self, retention_seconds=900):
+        self.jobs = {}
+        self.retention_seconds = retention_seconds
+
+    def _prune(self):
+        cutoff = time.monotonic() - self.retention_seconds
+        self.jobs = {
+            key: value for key, value in self.jobs.items()
+            if value["status"] not in self.TERMINAL or value["updatedClock"] >= cutoff
+        }
+
+    def start(self, request_id, owner_id, conversation_id, task):
+        self._prune()
+        if request_id in self.jobs:
+            raise HTTPException(409, "Bu işlem kimliği daha önce kullanıldı.")
+        if any(
+            job["ownerId"] == owner_id
+            and job["conversationId"] == conversation_id
+            and job["status"] not in self.TERMINAL
+            for job in self.jobs.values()
+        ):
+            raise HTTPException(409, "Bu sohbet için devam eden bir işlem bulunuyor.")
+        timestamp = now()
+        self.jobs[request_id] = {
+            "requestId": request_id,
+            "ownerId": owner_id,
+            "conversationId": conversation_id,
+            "status": "running",
+            "stage": "interpreting",
+            "message": "İstek yorumlanıyor",
+            "cancellable": True,
+            "createdAt": timestamp,
+            "updatedAt": timestamp,
+            "updatedClock": time.monotonic(),
+            "task": task,
+            "error": None,
+        }
+        return self.public(request_id, owner_id)
+
+    def update(self, request_id, *, stage, message, cancellable):
+        job = self.jobs.get(request_id)
+        if not job or job["status"] in self.TERMINAL:
+            return
+        job.update({
+            "stage": stage,
+            "message": message,
+            "cancellable": bool(cancellable),
+            "updatedAt": now(),
+            "updatedClock": time.monotonic(),
+        })
+
+    def complete(self, request_id):
+        self._finish(request_id, "completed", "İşlem tamamlandı")
+
+    def fail(self, request_id, error):
+        self._finish(request_id, "failed", "İşlem tamamlanamadı", str(error)[:300])
+
+    def cancelled(self, request_id):
+        self._finish(request_id, "cancelled", "İşlem iptal edildi")
+
+    def _finish(self, request_id, status, message, error=None):
+        job = self.jobs.get(request_id)
+        if not job:
+            return
+        job.update({
+            "status": status,
+            "stage": status,
+            "message": message,
+            "cancellable": False,
+            "updatedAt": now(),
+            "updatedClock": time.monotonic(),
+            "task": None,
+            "error": error,
+        })
+
+    def public(self, request_id, owner_id):
+        self._prune()
+        job = self.jobs.get(request_id)
+        if not job or job["ownerId"] != owner_id:
+            raise HTTPException(404, "İşlem bulunamadı.")
+        return {
+            key: job[key]
+            for key in (
+                "requestId", "conversationId", "status", "stage", "message",
+                "cancellable", "createdAt", "updatedAt", "error",
+            )
+        }
+
+    def cancel(self, request_id, owner_id):
+        job = self.jobs.get(request_id)
+        if not job or job["ownerId"] != owner_id:
+            raise HTTPException(404, "İşlem bulunamadı.")
+        if job["status"] in self.TERMINAL:
+            return self.public(request_id, owner_id)
+        if not job["cancellable"]:
+            raise HTTPException(
+                409,
+                "Kalıcı işlem adımı başladığı için bu aşamada güvenli iptal yapılamaz.",
+            )
+        task = job.get("task")
+        self.cancelled(request_id)
+        if task and not task.done():
+            task.cancel()
+        return self.public(request_id, owner_id)
 
 
 def summary(value):
@@ -656,11 +773,13 @@ class AgentApplication:
         self.store = store or ConversationStore()
         self.states = {}
 
-    async def _generate(self, messages, *, json_mode=False, num_predict=None):
-        """Run Ollama outside the event loop and never bypass it for web requests."""
+    async def _generate(
+        self, messages, *, json_mode=False, num_predict=None, allow_fast_route=False
+    ):
+        """Run Ollama outside the event loop; optionally allow safe planner bypass."""
         options = {
             "json_mode": json_mode,
-            "allow_fast_route": False,
+            "allow_fast_route": allow_fast_route,
             "num_predict": num_predict,
         }
         # Production LLMService accepts every option above.  Small injected
@@ -681,7 +800,18 @@ class AgentApplication:
             **options,
         )
 
-    async def chat(self, conversation_id, message, owner_id="anonymous"):
+    async def _report_progress(self, callback, stage, message, cancellable=True):
+        if callback is None:
+            return
+        result = callback(
+            stage=stage,
+            message=message,
+            cancellable=bool(cancellable),
+        )
+        if inspect.isawaitable(result):
+            await result
+
+    async def chat(self, conversation_id, message, owner_id="anonymous", progress=None):
         started_at = now()
         started_clock = time.perf_counter()
         execution_id = str(uuid.uuid4())
@@ -689,6 +819,9 @@ class AgentApplication:
         message = message.strip()
         if not message:
             raise HTTPException(422, "Mesaj boş olamaz.")
+        await self._report_progress(
+            progress, "interpreting", "İstek yorumlanıyor", cancellable=True
+        )
         self.store.ensure(conversation_id, owner_id, message)
         state = self.states.setdefault(conversation_id, ConversationState())
         if state.pending_draft_id is None:
@@ -706,13 +839,16 @@ class AgentApplication:
         names = {t.name for t in tools}
         cached = {k: v for k, v in {"last_cheapest_plan": state.last_cheapest_plan, "last_fastest_plan": state.last_fastest_plan}.items() if is_plan_valid(v)}
         system_prompt = get_execution_plan_prompt(tools, state.last_plan, state, cached)
+        planner_messages = [
+            {"role": "system", "content": system_prompt},
+            *state.history,
+            {"role": "user", "content": message},
+        ]
+        _, fast_route = prepare_inference_messages(planner_messages)
         raw = await self._generate(
-            [
-                {"role": "system", "content": system_prompt},
-                *state.history,
-                {"role": "user", "content": message},
-            ],
+            planner_messages,
             json_mode=True,
+            allow_fast_route=True,
         )
         repaired = False
         repair_summary = None
@@ -806,7 +942,28 @@ class AgentApplication:
         permission = "FULL" if plan_has_write and (write_intent or confirm_intent) else "PLAN"
         if permission == "PLAN" and plan_has_write:
             raise HTTPException(403, "Salt okunur istekte yazma işlemi engellendi.")
-        self.store.add_message(conversation_id, "user", message)
+        tool_names = {step.get("tool") for step in plan.get("steps", [])}
+        if tool_names & {"search_offers", "compare_offers", "create_procurement_plan"}:
+            execution_message = "Teklifler karşılaştırılıyor"
+        elif tool_names & {
+            "list_products", "search_products", "list_low_stock",
+            "list_out_of_stock", "calculate_replenishment",
+        }:
+            execution_message = "Stok bilgileri alınıyor"
+        else:
+            execution_message = "İşlem adımları uygulanıyor"
+        await self._report_progress(
+            progress,
+            "executing",
+            execution_message,
+            cancellable=permission == "PLAN",
+        )
+        # Write intent is recorded before execution for audit durability.  A
+        # read-only/planning message is deferred so safe cancellation cannot
+        # leave an orphan history entry that would be duplicated on retry.
+        user_message_persisted = permission == "FULL"
+        if user_message_persisted:
+            self.store.add_message(conversation_id, "user", message)
         execution = await execute_plan(plan, self.client, names, state)
         if not execution.get("success") and execution.get("retryable") is not False:
             # retryable=False: is durumu (or. siparis edilecek urun yok).
@@ -889,13 +1046,14 @@ class AgentApplication:
                     received_step_id = step_id
 
         goal = plan.get("goal", "").upper()
+        await self._report_progress(
+            progress,
+            "responding",
+            "Sonuç hazırlanıyor",
+            cancellable=permission == "PLAN",
+        )
         if execution.get("success") and goal in {"INFO", "REASON"}:
             reasoning_data = clean_tool_results_for_reasoning(execution.get("results", {}))
-            raw_answer = await self._generate(
-                [{"role": "system", "content": get_reasoning_prompt(message, reasoning_data)}],
-                json_mode=ANSWER_SCHEMA,
-                num_predict=512,
-            )
             fallback = offer_tradeoff_fallback(message, final) or format_plan_comparison_fallback(
                 reasoning_data
             ) or (
@@ -903,7 +1061,15 @@ class AgentApplication:
                 if last_tool
                 else format_final_answer(reasoning_data)
             )
-            answer = structured_answer(raw_answer, fallback)
+            if fast_route:
+                answer = fallback
+            else:
+                raw_answer = await self._generate(
+                    [{"role": "system", "content": get_reasoning_prompt(message, reasoning_data)}],
+                    json_mode=ANSWER_SCHEMA,
+                    num_predict=512,
+                )
+                answer = structured_answer(raw_answer, fallback)
         elif goal == "CHAT":
             answer = final.get("chat_answer", "")
         elif received_step_id is not None:
@@ -1002,7 +1168,9 @@ class AgentApplication:
         finished_at = now()
         telemetry = {"executionId": execution_id, "traceId": trace_id,
                      "planId": plan["id"], "model": os.getenv("LLM_MODEL", "loglanmamış"),
-                     "promptVersion": "execution-plan-v1", "applicationVersion": os.getenv("APP_VERSION", "development"),
+                     "promptVersion": "fast-route-v1" if fast_route else "execution-plan-v1",
+                     "fastRoute": fast_route,
+                     "applicationVersion": os.getenv("APP_VERSION", "development"),
                      "environment": os.getenv("APP_ENV", "development"), "startedAt": started_at,
                      "finishedAt": finished_at, "durationMs": round((time.perf_counter() - started_clock) * 1000),
                      "missingFields": ["HTTP request ID", "MCP server sürümü", "tool sürümü", "idempotency key"]}
@@ -1011,6 +1179,11 @@ class AgentApplication:
                     "succeeded": bool(execution.get("success")),
                     "pendingReceiveIds": list(state.pending_receive_ids), "explanation": explanation,
                     "telemetry": telemetry}
+        # Persist the pair only after the operation has reached a terminal result.
+        # A safely cancelled read/planning request therefore cannot leave an
+        # orphan user message in history or duplicate context when retried.
+        if not user_message_persisted:
+            self.store.add_message(conversation_id, "user", message)
         self.store.add_message(conversation_id, "assistant", answer, "success" if execution.get("success") else "failed", response)
         return response
 
@@ -1152,12 +1325,14 @@ async def lifespan(app):
     client = MCPClient({"stock-server": STOCK_SERVER_PATH, "marketplace-server": MARKETPLACE_SERVER_PATH})
     await client.connect()
     app.state.agent = AgentApplication(client, LLMService())
+    app.state.chat_progress = ChatProgressRegistry()
     yield
     app.state.agent.store.close()
     await client.close()
 
 
 app = FastAPI(title="Smart Stock LLM Host API", lifespan=lifespan)
+app.state.chat_progress = ChatProgressRegistry()
 origins = [x.strip() for x in os.getenv("LLM_CORS_ALLOWED_ORIGINS", "http://localhost:5173").split(",") if x.strip()]
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["GET", "POST", "DELETE"], allow_headers=["Content-Type", "X-Client-Id"])
 
@@ -1179,13 +1354,58 @@ async def create_conversation(body: CreateConversationRequest, x_client_id: str 
 @app.post("/api/chat")
 async def chat(body: ChatRequest, x_client_id: str | None = Header(None)):
     request_id = str(uuid.uuid4())
+    request_owner = owner(x_client_id)
+    progress_registry = app.state.chat_progress if body.requestId else None
+    if progress_registry:
+        progress_registry.start(
+            body.requestId,
+            request_owner,
+            body.conversationId,
+            asyncio.current_task(),
+        )
+
+    def report_progress(*, stage, message, cancellable):
+        if progress_registry:
+            progress_registry.update(
+                body.requestId,
+                stage=stage,
+                message=message,
+                cancellable=cancellable,
+            )
+
     try:
-        return await app.state.agent.chat(body.conversationId, body.message, owner(x_client_id))
-    except HTTPException:
+        result = await app.state.agent.chat(
+            body.conversationId,
+            body.message,
+            request_owner,
+            progress=report_progress,
+        )
+        if progress_registry:
+            progress_registry.complete(body.requestId)
+        return result
+    except asyncio.CancelledError as exc:
+        if progress_registry:
+            progress_registry.cancelled(body.requestId)
+        raise HTTPException(409, "İşlem kullanıcı tarafından iptal edildi.") from exc
+    except HTTPException as exc:
+        if progress_registry:
+            progress_registry.fail(body.requestId, exc.detail)
         raise
     except Exception as exc:
+        if progress_registry:
+            progress_registry.fail(body.requestId, exc)
         logger.exception("Chat request failed request_id=%s conversation_id=%s", request_id, body.conversationId)
         raise HTTPException(500, f"İşlem beklenmeyen bir hatayla tamamlanamadı. Takip kodu: {request_id}") from exc
+
+
+@app.get("/api/chat/requests/{request_id}")
+async def chat_progress(request_id: str, x_client_id: str | None = Header(None)):
+    return app.state.chat_progress.public(request_id, owner(x_client_id))
+
+
+@app.delete("/api/chat/requests/{request_id}")
+async def cancel_chat(request_id: str, x_client_id: str | None = Header(None)):
+    return app.state.chat_progress.cancel(request_id, owner(x_client_id))
 
 
 @app.get("/api/conversations/{conversation_id}")

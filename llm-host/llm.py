@@ -35,6 +35,8 @@ READ_ONLY_NEGATIONS = (
     "do not place an order",
 )
 FAST_OFFER_ROUTE_PREFIX = "search_offers:"
+FAST_PRODUCT_STOCK_ROUTE_PREFIX = "product_stock:"
+SAFE_PROCUREMENT_ROUTE_PREFIX = "safe_procurement:"
 OUT_OF_STOCK_TERMS = (
     "stokta olmayan",
     "stok yok",
@@ -113,6 +115,50 @@ def _fast_offer_query(user_message, normalized):
     return query or None
 
 
+def _fast_product_stock_query(user_message, normalized):
+    """Extract one product from an unambiguous read-only stock query.
+
+    Returning a wrong product query can only produce an empty read result; this
+    route never emits a write tool.  Requests that ask to create, approve or
+    compare anything remain on the full planner.
+    """
+    if "stok" not in normalized or not any(
+        term in normalized for term in ("goster", "listele", "bilgi", "durum")
+    ):
+        return None
+
+    blocker_text = normalized
+    for phrase in READ_ONLY_NEGATIONS:
+        blocker_text = blocker_text.replace(phrase, "")
+    if any(
+        term in blocker_text
+        for term in (
+            "taslak", "olustur", "satin al", "onay", "teklif", "fiyat",
+            "karsilastir", "purchase", "draft", "confirm", "compare",
+        )
+    ):
+        return None
+
+    raw = (user_message or "").strip()
+    parts = re.split(r"\s+için\s+", raw, maxsplit=1, flags=re.IGNORECASE)
+    if len(parts) == 2:
+        query = parts[0].strip(" .,:;!?")
+    else:
+        match = re.match(
+            r"^(.+?)\s+(?:mevcut\s+)?stok(?:\s+(?:bilgisini|bilgisi|durumunu|durumu|miktarını|miktari))?\b",
+            raw,
+            re.IGNORECASE,
+        )
+        query = match.group(1).strip(" .,:;!?") if match else ""
+
+    normalized_query = _normalize_for_route(query)
+    if not query or len(query) > 160 or normalized_query in {
+        "stok", "urun", "urunler", "tum urunler", "mevcut urunler",
+    }:
+        return None
+    return query
+
+
 def _fast_read_only_tool(user_message):
     """Return a safe single read tool for unambiguous stock-state retrievals."""
     normalized = _normalize_for_route(user_message)
@@ -123,12 +169,17 @@ def _fast_read_only_tool(user_message):
     blocker_text = normalized
     for phrase in READ_ONLY_NEGATIONS:
         blocker_text = blocker_text.replace(phrase, "")
-    if any(term in blocker_text for term in FAST_INFO_BLOCKERS):
-        return None
-    if any(term in normalized for term in OUT_OF_STOCK_TERMS):
+    if not any(term in blocker_text for term in FAST_INFO_BLOCKERS) and any(
+        term in normalized for term in OUT_OF_STOCK_TERMS
+    ):
         return "list_out_of_stock"
-    if any(term in normalized for term in LOW_STOCK_TERMS):
+    if not any(term in blocker_text for term in FAST_INFO_BLOCKERS) and any(
+        term in normalized for term in LOW_STOCK_TERMS
+    ):
         return "list_low_stock"
+    product_query = _fast_product_stock_query(user_message, normalized)
+    if product_query:
+        return FAST_PRODUCT_STOCK_ROUTE_PREFIX + product_query
     return None
 
 
@@ -153,6 +204,33 @@ def _fast_safe_draft_route(user_message):
     return SAFE_DRAFT_ROUTE
 
 
+def _fast_safe_procurement_route(user_message):
+    """Recognize a filter-free cheapest procurement plan with no write step."""
+    normalized = _normalize_for_route(user_message)
+    blocker_text = normalized
+    for phrase in READ_ONLY_NEGATIONS:
+        blocker_text = blocker_text.replace(phrase, "")
+    if not any(term in normalized for term in ("en ekonomik", "en ucuz", "cheapest")):
+        return None
+    if "plan" not in normalized or "satin alma" not in normalized:
+        return None
+    if not any(term in normalized for term in ("hazirla", "olustur")):
+        return None
+    if any(
+        term in blocker_text
+        for term in (
+            "butce", "kategori", "teslimat", "puan", "en hizli", "balanced",
+            "taslak", "siparis olustur", "onay", "draft", "confirm",
+        )
+    ):
+        return None
+    if any(term in normalized for term in OUT_OF_STOCK_TERMS):
+        return SAFE_PROCUREMENT_ROUTE_PREFIX + "list_out_of_stock"
+    if any(term in normalized for term in LOW_STOCK_TERMS):
+        return SAFE_PROCUREMENT_ROUTE_PREFIX + "list_low_stock"
+    return None
+
+
 def prepare_inference_messages(messages):
     """Preclassify only execution-planner requests with deterministic safe plans.
 
@@ -175,18 +253,33 @@ def prepare_inference_messages(messages):
     user_content = user.get("content", "")
     route = _fast_read_only_tool(user_content)
     if route:
+        plan_json = _fast_execution_plan(route)
         compact_system = f"""Smart Stock read-only execution planner.
 This request was preclassified as a simple stock-state lookup.
 Return EXACTLY one JSON object and no Markdown/prose:
-{{"type":"execution_plan","goal":"INFO","steps":[{{"id":"step_1","tool":"{route}","arguments":{{}}}}]}}
+{plan_json}
 Rules:
-- Use exactly `{route}` and no other tool.
-- Goal must be INFO and arguments must be an empty object.
+- Return the plan above without changing tool names, arguments or step order.
+- Goal must remain read-only (INFO or REASON).
 - Never emit write tools, procurement plans, drafts, orders, receive actions, `params`, or `final_response`.
 - Do not invent data; this response only selects the read tool. Actual data comes from MCP execution.
 """
         return [
             {"role": "system", "content": compact_system},
+            {"role": "user", "content": user_content},
+        ], route
+
+    route = _fast_safe_procurement_route(user_content)
+    if route:
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "Smart Stock deterministic procurement planner. "
+                    "The host will calculate the selected stock shortage and build "
+                    "a CHEAPEST procurement plan. Draft and order tools are forbidden."
+                ),
+            },
             {"role": "user", "content": user_content},
         ], route
 
@@ -209,7 +302,38 @@ Rules:
 
 def _fast_execution_plan(route):
     """Build an allow-listed deterministic plan for a preclassified route."""
-    if route.startswith(FAST_OFFER_ROUTE_PREFIX):
+    if route.startswith(SAFE_PROCUREMENT_ROUTE_PREFIX):
+        stock_tool = route.removeprefix(SAFE_PROCUREMENT_ROUTE_PREFIX)
+        plan = {
+            "type": "execution_plan",
+            "goal": "PLAN",
+            "steps": [
+                {
+                    "id": "step_1",
+                    "tool": stock_tool,
+                    "arguments": {},
+                },
+                {
+                    "id": "step_2",
+                    "tool": "calculate_replenishment",
+                    "arguments": {
+                        "product_ids": {"$from": "step_1.products.id"},
+                    },
+                },
+                {
+                    "id": "step_3",
+                    "tool": "create_procurement_plan",
+                    "arguments": {
+                        "items": {
+                            "$from": "step_2.replenishments",
+                            "$transform": "replenishments_to_items",
+                        },
+                        "objective": "CHEAPEST",
+                    },
+                },
+            ],
+        }
+    elif route.startswith(FAST_OFFER_ROUTE_PREFIX):
         query = route.removeprefix(FAST_OFFER_ROUTE_PREFIX)
         plan = {
             "type": "execution_plan",
@@ -220,6 +344,26 @@ def _fast_execution_plan(route):
                     "tool": "search_offers",
                     "arguments": {"query": query},
                 }
+            ],
+        }
+    elif route.startswith(FAST_PRODUCT_STOCK_ROUTE_PREFIX):
+        query = route.removeprefix(FAST_PRODUCT_STOCK_ROUTE_PREFIX)
+        plan = {
+            "type": "execution_plan",
+            "goal": "INFO",
+            "steps": [
+                {
+                    "id": "step_1",
+                    "tool": "search_products",
+                    "arguments": {"query": query},
+                },
+                {
+                    "id": "step_2",
+                    "tool": "calculate_replenishment",
+                    "arguments": {
+                        "product_ids": {"$from": "step_1.products.id"},
+                    },
+                },
             ],
         }
     elif route == SAFE_DRAFT_ROUTE:

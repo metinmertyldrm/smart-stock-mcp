@@ -9,7 +9,8 @@ if importlib.util.find_spec("fastapi") is None:
     raise unittest.SkipTest("FastAPI optional dependency is not installed")
 
 from app import CachedProcurementPlan, ConversationState, execute_plan
-from web_api import (AgentApplication, ChatRequest, ConversationStore, FALLBACK_PURPOSE,
+from web_api import (AgentApplication, ChatProgressRegistry, ChatRequest,
+                     ConversationStore, FALLBACK_PURPOSE,
                      TOOL_EXPLANATIONS, budget_replenishment_plan, conversation_title,
                      contextual_product_draft_plan, explicit_draft_quantity,
                      has_write_intent, now, offer_tradeoff_fallback,
@@ -31,6 +32,77 @@ class WebApiTest(unittest.TestCase):
     def test_chat_request_requires_conversation(self):
         with self.assertRaises(Exception):
             ChatRequest(conversationId="", message="test")
+
+    def test_chat_progress_is_owner_isolated_and_can_cancel_safe_stage(self):
+        registry = ChatProgressRegistry()
+        task = Mock()
+        task.done.return_value = False
+        registry.start("request-123", "owner-a", "conversation-1", task)
+        registry.update(
+            "request-123",
+            stage="executing",
+            message="Stok bilgileri alınıyor",
+            cancellable=True,
+        )
+
+        with self.assertRaises(Exception):
+            registry.public("request-123", "owner-b")
+        result = registry.cancel("request-123", "owner-a")
+
+        self.assertEqual("cancelled", result["status"])
+        self.assertFalse(result["cancellable"])
+        task.cancel.assert_called_once_with()
+
+    def test_chat_progress_refuses_cancel_after_write_execution_starts(self):
+        registry = ChatProgressRegistry()
+        task = Mock()
+        registry.start("request-456", "owner", "conversation-1", task)
+        registry.update(
+            "request-456",
+            stage="executing",
+            message="İşlem adımları uygulanıyor",
+            cancellable=False,
+        )
+
+        with self.assertRaises(Exception) as context:
+            registry.cancel("request-456", "owner")
+
+        self.assertIn("güvenli iptal", str(context.exception.detail))
+        task.cancel.assert_not_called()
+
+    def test_cancelled_read_request_does_not_leave_orphan_history_message(self):
+        import asyncio
+
+        conversation = self.store.create("owner", "Stok sorgusu")
+        client = AsyncMock()
+        client.list_tools.return_value = [SimpleNamespace(name="list_low_stock")]
+        llm = Mock()
+        llm.generate.return_value = (
+            '{"type":"execution_plan","goal":"INFO","steps":['
+            '{"id":"step_1","tool":"list_low_stock","arguments":{}}]}'
+        )
+        agent = AgentApplication(client, llm, self.store)
+
+        async def scenario():
+            execution_started = asyncio.Event()
+
+            async def wait_forever(*_args, **_kwargs):
+                execution_started.set()
+                await asyncio.Event().wait()
+
+            with patch("web_api.execute_plan", new=wait_forever):
+                task = asyncio.create_task(agent.chat(
+                    conversation["id"],
+                    "Kritik stoktaki ürünleri göster.",
+                    "owner",
+                ))
+                await execution_started.wait()
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+
+        asyncio.run(scenario())
+        self.assertEqual([], self.store.get(conversation["id"], "owner")["messages"])
 
     def test_conversations_are_persistent_and_owner_isolated(self):
         conversation = self.store.create("owner-a", "İlk sohbet")
@@ -343,7 +415,8 @@ class WebApiTest(unittest.TestCase):
         self.assertNotIn("Okay, let's", response["finalAnswer"])
         for call in llm.generate.call_args_list:
             self.assertTrue(call.kwargs["json_mode"])
-            self.assertFalse(call.kwargs["allow_fast_route"])
+        self.assertTrue(llm.generate.call_args_list[0].kwargs["allow_fast_route"])
+        self.assertFalse(llm.generate.call_args_list[1].kwargs["allow_fast_route"])
         self.assertEqual(
             llm.generate.call_args_list[1].kwargs["num_predict"],
             512,

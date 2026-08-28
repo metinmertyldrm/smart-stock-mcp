@@ -2,7 +2,8 @@ import json
 import unittest
 from unittest.mock import patch
 
-from llm import LLMService, SAFE_DRAFT_ROUTE, prepare_inference_messages
+from llm import (FAST_PRODUCT_STOCK_ROUTE_PREFIX, LLMService, SAFE_DRAFT_ROUTE,
+                 SAFE_PROCUREMENT_ROUTE_PREFIX, prepare_inference_messages)
 
 
 FULL_SYSTEM = "Smart Stock & Procurement execution planner.\n" + ("x" * 12000)
@@ -74,6 +75,92 @@ class FastReadOnlyPlannerRoutingTest(unittest.TestCase):
 
         self.assertEqual("list_low_stock", tool)
         self.assertIn('"tool":"list_low_stock"', prepared[0]["content"])
+
+    def test_named_product_stock_lookup_uses_authoritative_two_step_route(self):
+        service = LLMService()
+        messages = [
+            {"role": "system", "content": FULL_SYSTEM},
+            {"role": "user", "content": "Galaxy S24 256GB stok bilgisini göster."},
+        ]
+
+        prepared, route = prepare_inference_messages(messages)
+
+        self.assertEqual(f"{FAST_PRODUCT_STOCK_ROUTE_PREFIX}Galaxy S24 256GB", route)
+        self.assertIn('"tool":"search_products"', prepared[0]["content"])
+        self.assertIn('"tool":"calculate_replenishment"', prepared[0]["content"])
+        with patch("llm.requests.post") as post:
+            plan = json.loads(service.generate(messages))
+        post.assert_not_called()
+        self.assertEqual(
+            ["search_products", "calculate_replenishment"],
+            [step["tool"] for step in plan["steps"]],
+        )
+        self.assertEqual(
+            {"$from": "step_1.products.id"},
+            plan["steps"][1]["arguments"]["product_ids"],
+        )
+
+    def test_named_product_write_request_never_uses_stock_fast_route(self):
+        original = [
+            {"role": "system", "content": FULL_SYSTEM},
+            {
+                "role": "user",
+                "content": "Galaxy S24 256GB stok bilgisini göster ve sipariş oluştur.",
+            },
+        ]
+
+        prepared, route = prepare_inference_messages(original)
+
+        self.assertIsNone(route)
+        self.assertIs(prepared, original)
+
+    def test_simple_cheapest_out_of_stock_plan_skips_ollama_without_writing(self):
+        service = LLMService()
+        messages = [
+            {"role": "system", "content": FULL_SYSTEM},
+            {
+                "role": "user",
+                "content": (
+                    "Stokta olmayan ürünleri bul ve en ekonomik satın alma "
+                    "planını hazırla."
+                ),
+            },
+        ]
+
+        _, route = prepare_inference_messages(messages)
+        self.assertEqual(
+            f"{SAFE_PROCUREMENT_ROUTE_PREFIX}list_out_of_stock",
+            route,
+        )
+        with patch("llm.requests.post") as post:
+            plan = json.loads(service.generate(messages))
+
+        post.assert_not_called()
+        self.assertEqual("PLAN", plan["goal"])
+        self.assertEqual(
+            ["list_out_of_stock", "calculate_replenishment", "create_procurement_plan"],
+            [step["tool"] for step in plan["steps"]],
+        )
+        self.assertEqual("CHEAPEST", plan["steps"][2]["arguments"]["objective"])
+        self.assertNotIn("create_purchase_draft", str(plan))
+        self.assertNotIn("place_order", str(plan))
+
+    def test_budgeted_cheapest_plan_keeps_full_planner(self):
+        original = [
+            {"role": "system", "content": FULL_SYSTEM},
+            {
+                "role": "user",
+                "content": (
+                    "Stokta olmayan ürünleri bul ve 50.000 TL bütçeyle en "
+                    "ekonomik satın alma planını hazırla."
+                ),
+            },
+        ]
+
+        prepared, route = prepare_inference_messages(original)
+
+        self.assertIsNone(route)
+        self.assertIs(prepared, original)
 
     def test_deterministic_fast_route_skips_ollama(self):
         service = LLMService()
