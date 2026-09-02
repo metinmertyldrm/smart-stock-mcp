@@ -30,6 +30,27 @@ describe('canApproveDraft',()=>{
     expect(canDeleteDraft('ADMIN','CONFIRMED')).toBe(false);
   });
 
+  it('keeps local-mode rules when a role is present but the mode is passed',()=>{
+    expect(canApproveDraft('OPERATOR','PENDING','local')).toBe(false);
+    expect(canRejectDraft('OPERATOR','PENDING','local')).toBe(false);
+    expect(canDeleteDraft('MANAGER','PENDING','local')).toBe(false);
+    expect(canApproveDraft('MANAGER','PENDING','local')).toBe(true);
+  });
+
+  // Anonim kipte sunucu rol atamaz; arka uc istegi kisitsiz calistirir.
+  // Arayuzun dugmeyi gizlemesi, izin verilen islemi erisilemez kiliyordu.
+  it('allows the pending draft actions in anonymous mode where no role exists',()=>{
+    expect(canApproveDraft(undefined,'PENDING','anonymous')).toBe(true);
+    expect(canRejectDraft(undefined,'PENDING','anonymous')).toBe(true);
+    expect(canDeleteDraft(undefined,'PENDING','anonymous')).toBe(true);
+  });
+
+  it('still respects the draft status in anonymous mode',()=>{
+    expect(canApproveDraft(undefined,'CONFIRMED','anonymous')).toBe(false);
+    expect(canRejectDraft(undefined,'REJECTED','anonymous')).toBe(false);
+    expect(canDeleteDraft(undefined,'CONFIRMED','anonymous')).toBe(false);
+  });
+
   it('shows product and quantity counts instead of the ambiguous item label',()=>{
     const draft={items:[
       {product:{id:1},quantity:6},

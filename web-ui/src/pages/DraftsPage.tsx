@@ -20,7 +20,7 @@ const statusStyle:Record<DraftStatus,string>={
 
 export function DraftsPage(){
   const queryClient=useQueryClient();
-  const {user}=useAuth();
+  const {user,mode}=useAuth();
   const q=useQuery({queryKey:keys.drafts,queryFn:endpoints.drafts});
   const [filter,setFilter]=useState('all');
   const [selected,setSelected]=useState<Draft>();
@@ -118,9 +118,9 @@ export function DraftsPage(){
       approve={()=>approve(selected)}
       reject={()=>reject(selected)}
       remove={()=>remove(selected)}
-      canApprove={canApproveDraft(user?.role,selected.status)}
-      canReject={canRejectDraft(user?.role,selected.status)}
-      canDelete={canDeleteDraft(user?.role,selected.status)}
+      canApprove={canApproveDraft(user?.role,selected.status,mode)}
+      canReject={canRejectDraft(user?.role,selected.status,mode)}
+      canDelete={canDeleteDraft(user?.role,selected.status,mode)}
       busy={approval.isPending||rejection.isPending||deletion.isPending}
     />}
   </div>;
