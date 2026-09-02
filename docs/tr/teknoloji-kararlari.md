@@ -239,3 +239,18 @@ Bağımlılıklar artık sabit bekleme süreleriyle değil sağlık kontrolleriy
 
 Üretimde zorunlu ortam değişkenleri `${VAR:?...}` ile işaretlidir; eksikse yığın hiç
 başlamaz. Ayrıntı: `docs/production.md`, `docs/release.md`.
+
+### Ağ geçidi zaman aşımı model zaman aşımından büyük olmalı
+
+Tarayıcı `llm-host` ile doğrudan konuşmaz; istek `web-ui` konteynerindeki nginx
+üzerinden geçer. Bu iki sınır birlikte ayarlanmak zorundadır: `llm-host` Ollama'yı
+`OLLAMA_READ_TIMEOUT` (300s) kadar bekler, nginx'in `proxy_read_timeout`
+varsayılanı ise 60s'dir. Sınır ağ geçidinde daha küçük kalırsa, arka uç hâlâ
+çalışırken bağlantı kesilir ve kullanıcı 504 alır; üstelik nginx'in hata gövdesi
+HTML olduğundan arayüz arka ucun açıklamasını değil genel yedek iletiyi gösterir.
+
+Bu durum 02.09.2026'da gerçekleşti: `nginx.prod.conf` dosyasında `proxy_read_timeout
+330s` tanımlıyken geliştirme yapılandırması `nginx.conf` atlanmıştı. Aynı kuralın iki
+dosyadan yalnızca birinde bulunması, ortam yapılandırmalarının ayrı ayrı elle
+bakımının hataya açık olduğunu göstermektedir. Değer, model sınırının üzerinde
+(330s > 300s) tutulur.

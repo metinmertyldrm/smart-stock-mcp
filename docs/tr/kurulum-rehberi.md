@@ -169,6 +169,32 @@ dosyasını yerelden çalıştırabilirsiniz.
 Grafik işlemcisi olmayan makinede normaldir; ölçülen aralık 15–320 saniyedir.
 `OLLAMA_CONNECT_TIMEOUT` ve `OLLAMA_READ_TIMEOUT` ile sınırlar yükseltilebilir.
 
+### Arayüzde "İstek tamamlanamadı." çıkıyor, karar günlüğü boş
+
+Bu ileti `web-ui/src/api/client.ts` içindeki genel yedek metindir; HTTP yanıtı
+başarısız olduğunda gösterilir. Karar günlüğünün boş kalması, yanıt gövdesinin
+arayüze hiç ulaşmadığını gösterir. Arka uç hata dönseydi FastAPI `{"detail": …}`
+JSON'u dönerdi ve arayüz o açıklamayı gösterirdi; genel iletinin görünmesi gövdenin
+JSON olmadığı, yani hatanın ağ geçidinden geldiği anlamına gelir.
+
+Nedeni nginx'in 60 saniyelik `proxy_read_timeout` varsayılanıdır. `llm-host`
+Ollama'yı `OLLAMA_READ_TIMEOUT` (varsayılan 300s) kadar beklerken, ağ geçidi 60.
+saniyede bağlantıyı kesip 504 döner. En uzun zincir olan "en ucuz ve en hızlı planı
+karşılaştır" isteği bu sınırı ilk aşan istektir; belirlenimci hızlı yoldan geçen
+listeleme komutları etkilenmez.
+
+Ağ geçidi sınırı model sınırının **üzerinde** tutulmalıdır. `web-ui/nginx.conf` ve
+`web-ui/nginx.prod.conf` dosyalarındaki `location /llm/` bloğunda:
+
+```nginx
+proxy_connect_timeout 10s;
+proxy_send_timeout 30s;
+proxy_read_timeout 330s;
+```
+
+Doğrulama: `docker compose logs --tail 40 web-ui` çıktısında `/llm/api/chat`
+isteğinin 504 ile bitmesi ve hatanın yaklaşık 60. saniyede görünmesi.
+
 ### Testler geçici dosya silme hatası veriyor
 
 Bu hata giderilmiştir. Yeniden görülürse `with sqlite3.connect(...)` deyiminin bir

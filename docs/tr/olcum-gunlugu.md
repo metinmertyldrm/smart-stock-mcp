@@ -12,6 +12,11 @@ veritabanının durumu ve kodun sürümü. Bu günlüğün varlık sebebi budur.
 | 27.08.2026 | Temiz kabul veritabanı, `qwen3:8b` | 16/27 (%59) | Tekrarlanabilir koşullardaki ilk gerçek ölçüm |
 | 02.09.2026 | Temiz kabul veritabanı, `qwen3:8b` | **19/27 (%70)** | Kritik açıklar kapatıldıktan sonra |
 
+Ölçüm, arayüz ve nginx ağ geçidi üzerinden değil, `acceptance_runner.py` içinden
+plan hattı doğrudan çağrılarak alınır. Bu nedenle 02.09.2026'da bulunan ağ geçidi
+zaman aşımı hatası (bkz. `teknoloji-kararlari.md`) yukarıdaki sayıları etkilememiştir;
+düzeltmesi sonrasında ölçüm yeniden alınmasını gerektirmez.
+
 Koşum komutu:
 
 ```powershell
