@@ -2,6 +2,17 @@
 
 Smart Stock & Procurement MCP is an AI-assisted inventory and procurement system built around the Model Context Protocol (MCP). It tracks warehouse inventory, detects low-stock products, compares marketplace offers, creates procurement plans, and lets operators control sensitive actions through natural-language requests with explicit confirmation gates.
 
+## Documentation
+
+- `docs/tr/teknoloji-kararlari.md` — why each technology was chosen and how it is used (Turkish)
+- `docs/tr/kurulum-rehberi.md` — first-time setup guide with troubleshooting (Turkish)
+- `docs/tr/olcum-gunlugu.md` — acceptance measurement log and results (Turkish)
+- `docs/security.md`, `docs/production.md`, `docs/release.md` — security boundaries, production deployment, release process
+
+Latest acceptance measurement: **19/27 (70%)** on a clean acceptance database with
+`qwen3:8b`. All confirmation-gate scenarios pass. See the measurement log for the
+history and the classification of the remaining failures.
+
 ## Architecture
 
 The repository contains five main components:
