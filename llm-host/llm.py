@@ -414,6 +414,23 @@ def _fast_execution_plan(route):
     return json.dumps(plan, ensure_ascii=False, separators=(",", ":"))
 
 
+class LlmTimeoutError(RuntimeError):
+    """Model sure sinirinda cevap veremedi.
+
+    Bu bir isletim durumudur, kod hatasi degil: yerel cikarim yavas bir
+    makinede sinirin uzerine cikabilir. RuntimeError'dan tureyerek eski
+    yakalama noktalariyla uyumlu kalir; ayri sinif olmasi, sohbet katmaninin
+    bunu genel "beklenmeyen hata" yolundan ayirmasini saglar.
+    """
+
+    def __init__(self, connect_timeout, read_timeout):
+        self.connect_timeout = connect_timeout
+        self.read_timeout = read_timeout
+        super().__init__(
+            f"Ollama zaman asimi: connect={connect_timeout}s, read={read_timeout}s"
+        )
+
+
 class LLMService:
     def __init__(self):
         self.url = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
@@ -482,9 +499,7 @@ class LLMService:
                 timeout=(self.connect_timeout, self.read_timeout)
             )
         except requests.exceptions.Timeout as exc:
-            raise RuntimeError(
-                f"Ollama zaman aşımı: connect={self.connect_timeout}s, read={self.read_timeout}s"
-            ) from exc
+            raise LlmTimeoutError(self.connect_timeout, self.read_timeout) from exc
 
         try:
             response.raise_for_status()

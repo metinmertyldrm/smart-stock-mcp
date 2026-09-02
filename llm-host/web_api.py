@@ -24,7 +24,7 @@ from app import (MARKETPLACE_SERVER_PATH, STOCK_SERVER_PATH, CachedProcurementPl
                  build_repair_instruction, get_execution_plan_prompt, is_plan_valid,
                  normalize_redundant_plan_comparison, parse_execution_plan,
                  resolve_step_arguments, validate_plan_against_state)
-from llm import LLMService, prepare_inference_messages
+from llm import LLMService, LlmTimeoutError, prepare_inference_messages
 from mcp_client import MCPClient
 from prompt import get_reasoning_prompt
 
@@ -1391,6 +1391,24 @@ async def chat(body: ChatRequest, x_client_id: str | None = Header(None)):
         if progress_registry:
             progress_registry.fail(body.requestId, exc.detail)
         raise
+    except LlmTimeoutError as exc:
+        # Yerel cikarimin sinir asmasi bilinen bir isletim durumudur; kullaniciya
+        # takip koduyla "beklenmeyen hata" gostermek yanlis yere bakmasina yol acar.
+        message = (
+            f"Model {int(exc.read_timeout)} saniye içinde cevap vermedi, bu yüzden istek "
+            "tamamlanamadı. Daha kısa bir komut deneyebilir veya "
+            "OLLAMA_READ_TIMEOUT değerini yükseltebilirsiniz. Hiçbir stok veya "
+            "sipariş kaydı değiştirilmedi."
+        )
+        if progress_registry:
+            progress_registry.fail(body.requestId, message)
+        logger.warning(
+            "Chat request timed out request_id=%s conversation_id=%s read_timeout=%s",
+            request_id,
+            body.conversationId,
+            exc.read_timeout,
+        )
+        raise HTTPException(504, message) from exc
     except Exception as exc:
         if progress_registry:
             progress_registry.fail(body.requestId, exc)
@@ -1419,6 +1437,17 @@ async def confirm(conversation_id: str, x_client_id: str | None = Header(None)):
         return await app.state.agent.confirm(conversation_id, owner(x_client_id))
     except HTTPException:
         raise
+    except LlmTimeoutError as exc:
+        message = (
+            f"Model {int(exc.read_timeout)} saniye içinde cevap vermedi, bu yüzden onay "
+            "işlemi tamamlanamadı. Taslak onay bekler durumda kaldı; tekrar deneyebilirsiniz."
+        )
+        logger.warning(
+            "Confirmation timed out conversation_id=%s read_timeout=%s",
+            conversation_id,
+            exc.read_timeout,
+        )
+        raise HTTPException(504, message) from exc
     except Exception as exc:
         request_id = str(uuid.uuid4())
         logger.exception("Confirmation failed request_id=%s conversation_id=%s", request_id, conversation_id)
