@@ -195,6 +195,21 @@ proxy_read_timeout 330s;
 Doğrulama: `docker compose logs --tail 40 web-ui` çıktısında `/llm/api/chat`
 isteğinin 504 ile bitmesi ve hatanın yaklaşık 60. saniyede görünmesi.
 
+### Taslak sayfasında onay düğmesi görünmüyor
+
+Geliştirme varsayılanı `LLM_AUTH_MODE=anonymous`'tur: kullanıcı girişi kapalıdır,
+bu yüzden yan menüde "Çıkış yap" düğmesi ve başlıkta rol rozeti çizilmez.
+
+Bu kipte sunucu rol atamaz. Arayüz taslak düğmelerini role bakarak çizdiği için
+onay, ret ve silme hiç görünmüyordu; oysa arka uç izin verir (`rbac.py` rolsüz
+isteği kısıtsız sayar, `secure_api.py` onay yetkisini yalnızca `local` kipte
+denetler). Bu giderildi — `draftPermissions.ts` artık kimlik kipini de alıyor.
+
+Eski bir sürümdeysen onayı sohbetten verebilirsin: taslak oluştuktan sonra aynı
+sohbete `onaylıyorum` yaz. Rol tabanlı erişimi görmek istiyorsan `LLM_AUTH_MODE=local`
+ile çalıştır; ilk yönetici hesabı `LLM_BOOTSTRAP_ADMIN_USERNAME` ve
+`LLM_BOOTSTRAP_ADMIN_PASSWORD` ile bir kez oluşturulur.
+
 ### Testler geçici dosya silme hatası veriyor
 
 Bu hata giderilmiştir. Yeniden görülürse `with sqlite3.connect(...)` deyiminin bir

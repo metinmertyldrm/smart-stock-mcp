@@ -240,6 +240,21 @@ Bağımlılıklar artık sabit bekleme süreleriyle değil sağlık kontrolleriy
 Üretimde zorunlu ortam değişkenleri `${VAR:?...}` ile işaretlidir; eksikse yığın hiç
 başlamaz. Ayrıntı: `docs/production.md`, `docs/release.md`.
 
+### Aynı kural iki katmanda: kopyalanmamalı, türetilmeli
+
+Yetkilendirme hem arka uçta (`rbac.py`, `secure_api.py`) hem arayüzde
+(`draftPermissions.ts`) biliniyor. Arka uç kararı verir; arayüz yalnızca kullanıcıyı
+yapamayacağı bir işleme yöneltmemek için aynı kuralı önden uygular. İki taraf
+ayrışırsa iki hata tipi doğar: arayüz izin verip arka ucun reddetmesi (rahatsız edici
+ama güvenli) ya da **arka ucun izin verdiğini arayüzün gizlemesi** (işlev kaybı).
+
+İkincisi 02.09.2026'da yaşandı: anonim kipte sunucu rol atamaz, arayüz ise düğmeleri
+role bakarak çiziyordu, dolayısıyla geliştirme varsayılanında taslak hiç
+onaylanamıyordu. Arayüz denetimi artık kimlik kipini de hesaba katıyor.
+
+Ders: arayüzdeki denetim arka ucun kuralını *kopyalamamalı*, aynı girdilerden
+türetmelidir — rol tek başına yeterli girdi değildi, kip de gerekliydi.
+
 ### Ağ geçidi zaman aşımı model zaman aşımından büyük olmalı
 
 Tarayıcı `llm-host` ile doğrudan konuşmaz; istek `web-ui` konteynerindeki nginx
