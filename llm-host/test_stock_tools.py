@@ -165,3 +165,82 @@ class ToolCatalogIntegrityTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CategoryFilterTest(unittest.TestCase):
+    """Regresyon: `list_low_stock(category=...)` şemaya takılıyordu.
+
+    Taslak örnek komut 2 ("Elektronik kategorisindeki kritik ürünler") doğal
+    olarak bu argümanı üretiyor. Modele bu aracı kullanmamayı öğretmek yerine
+    aracın eksik olan yeteneğini tamamladık.
+
+    İkinci kural: eşleşmeyen kategori sessizce boş liste döndürmemeli. Boş liste,
+    o kategoride kritik ürün olmamasından ayırt edilemez.
+    """
+
+    class FakeCategory:
+        def __init__(self, name):
+            self.name = name
+
+    class FakeSubcategory:
+        def __init__(self, category):
+            self.category = category
+
+    class FakeProduct:
+        def __init__(self, product_id, category_name):
+            self.subcategory = CategoryFilterTest.FakeSubcategory(
+                CategoryFilterTest.FakeCategory(category_name)) if category_name else None
+            self.payload = {"id": product_id, "name": f"Urun {product_id}"}
+
+        def model_dump(self):
+            return dict(self.payload)
+
+    def products(self):
+        return [self.FakeProduct(1, "Elektronik"),
+                self.FakeProduct(2, "Kırtasiye"),
+                self.FakeProduct(3, "Elektronik")]
+
+    def test_category_is_declared_on_both_listing_tools(self):
+        catalog = {t.name: t for t in asyncio.run(tools.list_tools())}
+        for name in ("list_low_stock", "list_out_of_stock"):
+            with self.subTest(tool=name):
+                self.assertIn("category", catalog[name].inputSchema["properties"])
+
+    def test_filter_is_case_and_space_insensitive(self):
+        filtered, error = tools.filter_by_category(
+            self.products(), "  elektronik ", tools.product_category_name)
+
+        self.assertIsNone(error)
+        self.assertEqual([p.payload["id"] for p in filtered], [1, 3])
+
+    def test_missing_category_returns_everything(self):
+        filtered, error = tools.filter_by_category(
+            self.products(), None, tools.product_category_name)
+
+        self.assertIsNone(error)
+        self.assertEqual(len(filtered), 3)
+
+    def test_unknown_category_explains_instead_of_returning_empty(self):
+        filtered, error = tools.filter_by_category(
+            self.products(), "Mobilya", tools.product_category_name)
+
+        self.assertEqual(filtered, [])
+        self.assertIn("Mobilya", error)
+        self.assertIn("Elektronik", error)
+        self.assertIn("Kırtasiye", error)
+
+    def test_empty_source_does_not_invent_a_category_error(self):
+        """Hiç ürün yoksa sorun kategoride değil; boş liste doğru cevaptır."""
+        filtered, error = tools.filter_by_category([], "Elektronik", tools.product_category_name)
+
+        self.assertEqual(filtered, [])
+        self.assertIsNone(error)
+
+    def test_product_without_category_is_tolerated(self):
+        items = self.products() + [self.FakeProduct(4, None)]
+
+        filtered, error = tools.filter_by_category(
+            items, "Elektronik", tools.product_category_name)
+
+        self.assertIsNone(error)
+        self.assertEqual([p.payload["id"] for p in filtered], [1, 3])

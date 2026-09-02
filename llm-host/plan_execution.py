@@ -544,6 +544,26 @@ def coerce_collection_arguments(tool_name: str, arguments: dict) -> dict:
     return normalized
 
 
+def drop_empty_optional_arguments(tool_name: str, arguments: dict) -> dict:
+    """Koleksiyon olmayan bir argumandaki bos liste/nesne atilir.
+
+    Model kullanmadigi suzgecleri bos degerle dolduruyor (olculen ornek:
+    compare_offers'a min_rating=[], quantity=[]); sema sayi bekledigi icin cagri
+    reddediliyor. Bos deger zaten hicbir kisit ifade etmez, atmak bilgi
+    kaybettirmez -- bu bir SEKIL duzeltmesidir.
+
+    Koleksiyon argumani (items, order_ids) haric tutulur: oradaki bos liste bir
+    is durumudur ve detect_empty_input onu ayrica acikliyor.
+    """
+    collection_key = COLLECTION_ARGUMENTS.get(tool_name)
+    cleaned = {}
+    for key, value in arguments.items():
+        if key != collection_key and isinstance(value, (list, dict)) and not value:
+            continue
+        cleaned[key] = value
+    return cleaned
+
+
 def detect_empty_input(tool_name: str, arguments: dict, step: dict, plan: dict):
     key = COLLECTION_ARGUMENTS.get(tool_name)
     if not key:
@@ -610,6 +630,7 @@ async def execute_plan(plan: dict, client, available_tool_names: set[str], state
             arguments = resolve_step_arguments(step.get("arguments", {}), execution_results, state)
             arguments = remove_none_values(arguments)
             arguments = coerce_collection_arguments(tool_name, arguments)
+            arguments = drop_empty_optional_arguments(tool_name, arguments)
             empty_reason = detect_empty_input(tool_name, arguments, step, plan)
             if empty_reason:
                 return {

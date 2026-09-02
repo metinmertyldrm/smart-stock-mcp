@@ -35,20 +35,59 @@ def _stub_mcp():
     except Exception:
         pass
 
+    class _StubModel:
+        """Verilen anahtar kelime argumanlarini oldugu gibi tasiyan asgari model."""
+
+        def __init__(self, **fields):
+            for key, value in fields.items():
+                setattr(self, key, value)
+
+        def __repr__(self):
+            return f"{type(self).__name__}({self.__dict__})"
+
+    class _StubStdioServerParameters(_StubModel):
+        """command/args/env alanlarini tasiyan asgari parametre nesnesi."""
+
     mcp_mod = types.ModuleType("mcp")
     mcp_mod.ClientSession = object
-    mcp_mod.StdioServerParameters = object
+    mcp_mod.StdioServerParameters = _StubStdioServerParameters
 
     client_mod = types.ModuleType("mcp.client")
     stdio_mod = types.ModuleType("mcp.client.stdio")
     stdio_mod.stdio_client = None
 
+    class _StubTextContent(_StubModel):
+        pass
+
+    class _StubTool(_StubModel):
+        pass
+
     types_mod = types.ModuleType("mcp.types")
-    types_mod.TextContent = type("TextContent", (), {})
-    types_mod.Tool = type("Tool", (), {})
+    types_mod.TextContent = _StubTextContent
+    types_mod.Tool = _StubTool
+
+    class _StubServer:
+        """Gercek Server'in yalnizca modul yuklenirken kullanilan yuzeyi.
+
+        `mcp` kurulu olmayan ortamlarda (sade bir CI konteyneri, gelistirici
+        makinesindeki ikinci bir sanal ortam) tool modulleri yine de import
+        edilebilmeli. Dekoratorler islevi oldugu gibi dondurur; boylece
+        `list_tools()` ve `handle_call_tool()` dogrudan cagrilabilir kalir.
+        """
+
+        def __init__(self, *args, **kwargs):
+            self.name = args[0] if args else None
+
+        def _passthrough(self, *args, **kwargs):
+            return lambda func: func
+
+        list_tools = call_tool = list_resources = read_resource = _passthrough
+
+        def get_capabilities(self, *args, **kwargs):
+            return {}
 
     server_mod = types.ModuleType("mcp.server")
-    server_mod.Server = type("Server", (), {})
+    server_mod.Server = _StubServer
 
     _register({
         "mcp": mcp_mod,

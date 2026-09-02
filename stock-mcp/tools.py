@@ -9,6 +9,51 @@ server = Server("stock-server")
 service = ProductService()
 
 
+CATEGORY_ARGUMENT = {
+    "type": "string",
+    "description": "Category name to filter the products (case-insensitive).",
+}
+
+
+def product_category_name(product):
+    """Urunun kategori adini cikarir: product.subcategory.category.name"""
+    subcategory = getattr(product, "subcategory", None)
+    category = getattr(subcategory, "category", None) if subcategory else None
+    return getattr(category, "name", None) if category else None
+
+
+def replenishment_category_name(item):
+    return getattr(item, "categoryName", None)
+
+
+def filter_by_category(items, category, name_of):
+    """Kategoriye gore suzer; (suzulmus_liste, hata_mesaji) dondurur.
+
+    Eslesme bulunamadiginda sessizce bos liste dondurmek yaniltici olur:
+    bos liste, o kategoride kritik urun bulunmamasindan ayirt edilemez ve
+    kullanici yanlis bir sonuca "sorun yok" diye bakar. Bunun yerine hangi
+    degerin bulunamadigini ve hangi kategorilerin mevcut oldugunu soyluyoruz.
+    """
+    if not category:
+        return items, None
+
+    wanted = str(category).strip().casefold()
+    known = sorted({name for name in (name_of(i) for i in items) if name})
+    filtered = [i for i in items if (name_of(i) or "").strip().casefold() == wanted]
+
+    if not filtered and known:
+        return [], (
+            f"'{category}' adinda bir kategori bulunamadi. "
+            f"Mevcut kategoriler: {', '.join(known)}."
+        )
+    return filtered, None
+
+
+def category_error_response(message):
+    return [TextContent(type="text", text=json.dumps(
+        {"success": False, "error": message}, ensure_ascii=False))]
+
+
 @server.list_tools()
 async def list_tools() -> list[Tool]:
     """List all available tools."""
@@ -42,16 +87,20 @@ async def list_tools() -> list[Tool]:
             description="List all products which are currently completely out of stock (quantity = 0)",
             inputSchema={
                 "type": "object",
-                "properties": {},
+                "properties": {"category": CATEGORY_ARGUMENT},
                 "additionalProperties": False,
             }
         ),
         Tool(
             name="list_low_stock",
-            description="List the products whose stock levels are at or below their defined minimum thresholds (excluding out-of-stock).",
+            description=(
+                "List the products whose stock levels are at or below their defined "
+                "minimum thresholds (excluding out-of-stock). Can optionally filter by "
+                "category name."
+            ),
             inputSchema={
                 "type": "object",
-                "properties": {},
+                "properties": {"category": CATEGORY_ARGUMENT},
                 "additionalProperties": False,
             }
         ),
@@ -271,6 +320,10 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[TextConten
 
         elif name == "list_out_of_stock":
             products = await service.get_out_of_stock_products()
+            products, category_error = filter_by_category(
+                products, arguments.get("category"), product_category_name)
+            if category_error:
+                return category_error_response(category_error)
             result = {
                 "success": True,
                 "count": len(products),
@@ -285,6 +338,10 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[TextConten
 
         elif name == "list_low_stock":
             products = await service.get_low_stock_products()
+            products, category_error = filter_by_category(
+                products, arguments.get("category"), product_category_name)
+            if category_error:
+                return category_error_response(category_error)
             result = {
                 "success": True,
                 "count": len(products),
@@ -301,12 +358,10 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[TextConten
             product_id = arguments.get("product_id")
             product_ids = arguments.get("product_ids")
             replenishments = await service.calculate_replenishment(product_id, product_ids)
-            category = arguments.get("category")
-            if category:
-                replenishments = [
-                    r for r in replenishments
-                    if r.categoryName and r.categoryName.casefold() == category.casefold()
-                ]
+            replenishments, category_error = filter_by_category(
+                replenishments, arguments.get("category"), replenishment_category_name)
+            if category_error:
+                return category_error_response(category_error)
             result = {
                 "success": True,
                 "count": len(replenishments),

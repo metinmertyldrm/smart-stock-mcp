@@ -255,6 +255,7 @@ def parse_execution_plan(text: str) -> dict:
             raise ValueError(
                 "ORDER planının son adımı 'place_order' veya 'create_incoming_orders' olmalıdır."
             )
+        validate_incoming_orders_source(steps)
     elif goal == "RECEIVE":
         if not steps:
             raise ValueError("RECEIVE planında en az bir adım bulunmalıdır.")
@@ -277,6 +278,42 @@ def parse_execution_plan(text: str) -> dict:
                 raise ValueError("REASON planı yazma araçları (write tools) içeremez.")
 
     return parsed
+
+
+def validate_incoming_orders_source(steps):
+    """ORDER zincirinde beklenen stok kaydi place_order sonucundan turetilmelidir.
+
+    Model bu adimin kalemlerini elle yazdiginda teslimat tarihini de uyduruyor
+    (olculen ornek: '2023-10-15'). Uydurma bir gecmis tarih, mali daha gelmeden
+    stoga alinabilir gostereceginden backend tarafindan reddediliyor; uydurma bir
+    gelecek tarih ise sessizce yanlis bir teslimat beklentisi yaratirdi.
+
+    Dogru deger zaten siparis sonucunda var: `order_to_incoming_items` donusumu
+    onu cikariyor. Bu yuzden adimin `$from` ile place_order adimina baglanmasini
+    sart kosuyoruz; duz liste yazilmis plan calistirilmadan reddediliyor.
+    """
+    order_step_ids = {
+        step.get("id") or f"step_{index + 1}"
+        for index, step in enumerate(steps)
+        if step.get("tool") == "place_order"
+    }
+    if not order_step_ids:
+        return
+
+    for index, step in enumerate(steps):
+        if step.get("tool") != "create_incoming_orders":
+            continue
+        items = (step.get("arguments") or {}).get("items")
+        reference = items.get("$from") if isinstance(items, dict) else None
+        source_id = reference.partition(".")[0] if isinstance(reference, str) else None
+        if source_id in order_step_ids:
+            continue
+        raise ValueError(
+            "create_incoming_orders adiminin 'items' argumani place_order adimindan "
+            "turetilmelidir: {\"$from\": \"<place_order adiminin id>\", "
+            "\"$transform\": \"order_to_incoming_items\"}. Kalemleri ve teslimat "
+            "tarihini elle yazma; dogru tarih siparis sonucunda bulunuyor."
+        )
 
 
 def validate_plan_against_state(plan: dict, state) -> None:
