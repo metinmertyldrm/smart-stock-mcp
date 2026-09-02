@@ -195,6 +195,20 @@ proxy_read_timeout 330s;
 Doğrulama: `docker compose logs --tail 40 web-ui` çıktısında `/llm/api/chat`
 isteğinin 504 ile bitmesi ve hatanın yaklaşık 60. saniyede görünmesi.
 
+### Panel boş, "kimlik servisine ulaşılamadı" ya da 502
+
+Arka uç konteynerleri yeniden kurulduktan sonra görülürse sebep nginx'in adres
+önbelleğidir (bkz. `teknoloji-kararlari.md`). Hızlı çözüm ağ geçidini yeniden
+başlatmaktır:
+
+```powershell
+docker compose restart web-ui
+```
+
+Kalıcı çözüm uygulanmıştır: `nginx.conf` ve `nginx.prod.conf` artık adresi istek
+anında çözüyor. Yine de görülürse `docker compose logs web-ui` çıktısında
+`Host is unreachable` satırını arayın.
+
 ### Taslak sayfasında onay düğmesi görünmüyor
 
 Geliştirme varsayılanı `LLM_AUTH_MODE=anonymous`'tur: kullanıcı girişi kapalıdır,

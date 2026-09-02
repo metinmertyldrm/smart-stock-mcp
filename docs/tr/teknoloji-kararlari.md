@@ -240,6 +240,30 @@ Bağımlılıklar artık sabit bekleme süreleriyle değil sağlık kontrolleriy
 Üretimde zorunlu ortam değişkenleri `${VAR:?...}` ile işaretlidir; eksikse yığın hiç
 başlamaz. Ayrıntı: `docs/production.md`, `docs/release.md`.
 
+### Adres çözümü de zamanla eskir
+
+nginx, `proxy_pass http://llm-host:8000/` gibi sabit bir isimde adresi **yalnızca
+açılışta bir kez** çözer ve bulduğu IP'yi ömür boyu saklar. Arka uç konteyneri
+yeniden kurulup yeni bir IP aldığında nginx eski adrese gitmeye devam eder ve
+`502 (113: Host is unreachable)` döner. Arka uç sağlıklı görünürken arayüz ona
+ulaşamaz; belirti "kimlik servisine ulaşılamadı" ya da boş panel olarak çıkar.
+
+02.09.2026'da bu iki kez yaşandı; ikincisinde `docker compose up -d --build web-ui
+llm-host` komutu arka uçları yeniden kurup nginx'i onlardan önce başlattığı için
+tetiklendi. Çözüm, adresi istek anında çözdürmektir:
+
+```nginx
+resolver 127.0.0.11 valid=10s ipv6=off;
+set $llm_upstream http://llm-host:8000;
+rewrite ^/llm/(.*)$ /$1 break;
+proxy_pass $llm_upstream;
+```
+
+`127.0.0.11` Docker'ın gömülü DNS'idir. `proxy_pass`'e değişken verildiğinde nginx
+çözümü her istekte yapar. `rewrite` satırı zorunludur: değişken kullanıldığında
+nginx `/llm/` önekini kendiliğinden kırpmaz, atlanırsa arka uca `/llm/api/...`
+gider ve 404 alınır. Aynı düzen `/stock/` ve üretimdeki `/_auth` için de uygulandı.
+
 ### Aynı kural iki katmanda: kopyalanmamalı, türetilmeli
 
 Yetkilendirme hem arka uçta (`rbac.py`, `secure_api.py`) hem arayüzde
