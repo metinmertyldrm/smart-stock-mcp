@@ -544,6 +544,42 @@ def coerce_collection_arguments(tool_name: str, arguments: dict) -> dict:
     return normalized
 
 
+# JSON sema anahtarlari. Model bazen argumanin DEGERI yerine semadaki tanimi
+# kopyaliyor: category={"type": "string"}. Bu bir kisit degil, tanimin kendisi.
+SCHEMA_STUB_KEYS = frozenset(
+    {"type", "description", "enum", "items", "properties", "default", "format", "title", "examples"}
+)
+
+
+def is_schema_stub(value) -> bool:
+    """Deger, JSON sema parcasinin kopyasi mi?"""
+    if not isinstance(value, dict) or not value:
+        return False
+    return "type" in value and set(value).issubset(SCHEMA_STUB_KEYS)
+
+
+def drop_schema_echo_arguments(arguments: dict) -> dict:
+    """Sema tanimini deger sanip kopyalayan argumanlari atar.
+
+    Olculen ornek (03.09.2026): "stok durumu kritik olan urunleri listele"
+    komutunda model list_low_stock'u category={"type": "string"} ile cagirdi ve
+    sema "is not of type 'string'" diyerek reddetti. Kullanici hicbir kategori
+    soylememisti; deger kullanicidan gelen bir kisit degil, semanin kendisiydi.
+    Atmak bilgi kaybettirmez -- bu bir SEKIL duzeltmesidir, niyet duzeltmesi
+    degil. Filtre nesnelerinin icindeki ayni kopyalar da temizlenir.
+    """
+    cleaned = {}
+    for key, value in arguments.items():
+        if is_schema_stub(value):
+            continue
+        if isinstance(value, dict):
+            inner = {k: v for k, v in value.items() if not is_schema_stub(v)}
+            cleaned[key] = inner
+            continue
+        cleaned[key] = value
+    return cleaned
+
+
 def drop_empty_optional_arguments(tool_name: str, arguments: dict) -> dict:
     """Koleksiyon olmayan bir argumandaki bos liste/nesne atilir.
 
@@ -630,6 +666,7 @@ async def execute_plan(plan: dict, client, available_tool_names: set[str], state
             arguments = resolve_step_arguments(step.get("arguments", {}), execution_results, state)
             arguments = remove_none_values(arguments)
             arguments = coerce_collection_arguments(tool_name, arguments)
+            arguments = drop_schema_echo_arguments(arguments)
             arguments = drop_empty_optional_arguments(tool_name, arguments)
             empty_reason = detect_empty_input(tool_name, arguments, step, plan)
             if empty_reason:

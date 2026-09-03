@@ -240,6 +240,22 @@ Bağımlılıklar artık sabit bekleme süreleriyle değil sağlık kontrolleriy
 Üretimde zorunlu ortam değişkenleri `${VAR:?...}` ile işaretlidir; eksikse yığın hiç
 başlamaz. Ayrıntı: `docs/production.md`, `docs/release.md`.
 
+### Şekil düzeltmesinin üçüncü örneği: şemanın kendisini değer sanmak
+
+03.09.2026'da model `list_low_stock` aracını `category={"type": "string"}` ile
+çağırdı; yani argümanın **değeri** yerine şemadaki **tanımı** kopyaladı. Şema
+`is not of type 'string'` diyerek reddetti, plan ilk adımda durdu.
+
+Bu bir şekil hatasıdır, niyet hatası değil: kullanıcı hiçbir kategori
+söylememişti, dolayısıyla atılan değer kullanıcının verdiği bir kısıt değil,
+şemanın kopyasıdır. Atmak bilgi kaybettirmez. `drop_schema_echo_arguments`
+değeri JSON şema parçası olan argümanları (yalnızca `type`, `description`,
+`enum` gibi anahtarlardan oluşan sözlükler) araç çağrısından önce temizler;
+filtre nesnelerinin içindeki aynı kopyalar da temizlenir.
+
+Sınır yine aynı: gerçek bir `category="Elektronik"` değeri **atılmaz**, çünkü o
+kullanıcının kısıtıdır. Testlerden biri özellikle bunu denetler.
+
 ### Adres çözümü de zamanla eskir
 
 nginx, `proxy_pass http://llm-host:8000/` gibi sabit bir isimde adresi **yalnızca
