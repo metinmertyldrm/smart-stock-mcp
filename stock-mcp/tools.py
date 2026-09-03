@@ -50,8 +50,11 @@ def filter_by_category(items, category, name_of):
 
 
 def category_error_response(message):
+    # "business": True -> bu bir teknik ariza degil, kullaniciya gosterilmek uzere
+    # yazilmis bir aciklama. Ana uygulama bu isareti gorunce genel hata metni
+    # yerine bu mesaji gosterir ve bosuna onarim turu harcamaz.
     return [TextContent(type="text", text=json.dumps(
-        {"success": False, "error": message}, ensure_ascii=False))]
+        {"success": False, "business": True, "error": message}, ensure_ascii=False))]
 
 
 @server.list_tools()

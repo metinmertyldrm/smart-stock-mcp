@@ -72,6 +72,13 @@ services:
       OLLAMA_CONNECT_TIMEOUT: ${OLLAMA_CONNECT_TIMEOUT:-20}
       OLLAMA_READ_TIMEOUT: ${OLLAMA_READ_TIMEOUT:-300}
       LLM_CORS_ALLOWED_ORIGINS: http://localhost:${WEB_PORT:-5173}
+      # Gelistirme varsayilani anonim: giris yok, rol yok, kisit yok.
+      # .env icinde LLM_AUTH_MODE=local yapilirsa giris ekrani, rol rozeti ve
+      # "Cikis yap" dugmesi acilir; ilk yonetici hesabi asagidaki iki degiskenle
+      # bir kez olusturulur (kimlik veritabani bosken).
+      LLM_AUTH_MODE: ${LLM_AUTH_MODE:-anonymous}
+      LLM_BOOTSTRAP_ADMIN_USERNAME: ${LLM_BOOTSTRAP_ADMIN_USERNAME:-}
+      LLM_BOOTSTRAP_ADMIN_PASSWORD: ${LLM_BOOTSTRAP_ADMIN_PASSWORD:-}
       LLM_CONVERSATIONS_DB: /data/conversations.db
       LLM_SESSIONS_DB: /data/sessions.db
       LLM_SESSION_TTL_SECONDS: ${LLM_SESSION_TTL_SECONDS:-2592000}

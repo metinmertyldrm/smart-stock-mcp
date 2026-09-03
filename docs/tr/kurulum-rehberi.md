@@ -195,6 +195,26 @@ proxy_read_timeout 330s;
 Doğrulama: `docker compose logs --tail 40 web-ui` çıktısında `/llm/api/chat`
 isteğinin 504 ile bitmesi ve hatanın yaklaşık 60. saniyede görünmesi.
 
+### Çıkış / hesap değiştirme düğmesi yok
+
+Geliştirme varsayılanı `LLM_AUTH_MODE=anonymous`'tur: giriş yoktur, bu yüzden
+yan menüde "Çıkış yap" düğmesi ve başlıkta rol rozeti çizilmez. Rol de atanmaz.
+
+Hesap değiştirmek, rolleri ve yetki kurallarını görmek için `.env` dosyasına:
+
+```
+LLM_AUTH_MODE=local
+LLM_BOOTSTRAP_ADMIN_USERNAME=<kullanici adi>
+LLM_BOOTSTRAP_ADMIN_PASSWORD=<parola>
+```
+
+Ardından `docker compose up -d llm-host`. İlk yönetici hesabı yalnızca kimlik
+veritabanı boşken bir kez oluşturulur; daha sonra Kullanıcı Yönetimi ekranından
+başka roller açılır. `.env` depoya girmez (`.gitignore` içinde).
+
+Bu kipte RBAC devreye girer: taslağı OPERATOR oluşturur, onayı MANAGER veya ADMIN
+verir. Onay düğmesini görmüyorsanız rolünüz yetersizdir — hata değil, tasarım.
+
 ### Panel boş, "kimlik servisine ulaşılamadı" ya da 502
 
 Arka uç konteynerleri yeniden kurulduktan sonra görülürse sebep nginx'in adres

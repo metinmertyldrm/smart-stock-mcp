@@ -1264,14 +1264,24 @@ async def execute_plan(plan: dict, client: MCPClient, available_tool_names: set[
             normalized = normalize_tool_result(raw_result)
 
             if not normalized.get("success", True):
-                return {
+                tool_error = (
+                    normalized.get("error") or normalized.get("message") or "Tool başarısız oldu."
+                )
+                # Arac hatayi "business" olarak isaretlediyse metin kullanici icin
+                # yazilmistir; genel "islem tamamlanamadi" metniyle degistirmek
+                # kullanicinin sorunu kendi isteginde degil sistemde aramasina yol acar.
+                failure = {
                     "success": False,
                     "failed_step": step_id,
                     "failed_tool": tool_name,
-                    "error": normalized.get("error") or normalized.get("message") or "Tool başarısız oldu.",
+                    "error": tool_error,
                     "results": execution_results,
                     "durations_ms": step_durations,
                 }
+                if normalized.get("business"):
+                    failure["business_reason"] = tool_error
+                    failure["retryable"] = False
+                return failure
 
             result_data = normalized.get("data") if isinstance(normalized.get("data"), dict) else normalized
             execution_results[step_id] = result_data
