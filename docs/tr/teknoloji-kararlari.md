@@ -204,7 +204,7 @@ satın alma önerisine güvenemez. Günlük bir hata ayıklama aracı değil, g�
 
 | Araç | Ollama gerekir mi | Süre | Ne ölçer |
 |---|---|---|---|
-| `unittest discover` | Hayır | ~8 sn | Birim ve entegrasyon testleri |
+| `unittest discover` | Hayır | ~9 sn | 360 birim ve entegrasyon testi |
 | `golden_eval.py` | Hayır | Saniyeler | Hızlı yol, plan ayrıştırma, durum kapıları |
 | `acceptance_runner.py` | Evet | 45–60 dk | Taslak komutları gerçek yığına karşı |
 
@@ -294,6 +294,32 @@ onaylanamıyordu. Arayüz denetimi artık kimlik kipini de hesaba katıyor.
 
 Ders: arayüzdeki denetim arka ucun kuralını *kopyalamamalı*, aynı girdilerden
 türetmelidir — rol tek başına yeterli girdi değildi, kip de gerekliydi.
+
+### İşletim durumunu teknik arıza gibi gösterme
+
+Kullanıcının anlayabileceği bir durum ile programın beklenmedik bir hatası aynı
+kanaldan raporlanmamalıdır. İkisi karıştığında kullanıcı elinde yalnızca bir takip
+kodu kalır ve ne olduğunu değil, kime soracağını öğrenir.
+
+İki ayrı yerde aynı kusur vardı.
+
+**Zaman aşımı.** `llm.py` Ollama zaman aşımını doğru sınıflandırıyor, `LlmTimeoutError`
+fırlatıyordu; ancak `web_api.py` bunu genel `except Exception` bloğunda yakalayıp
+"beklenmeyen bir hata" olarak gösteriyordu. Doğru bilgi üretilmiş ama bir katman
+sonra kaybedilmişti. Zaman aşımı artık ayrı yakalanıyor, 504 ile birlikte hangi
+sınırın aşıldığını ve — en önemlisi — **hiçbir stok veya sipariş kaydının
+değiştirilmediğini** söylüyor. Yazma yapılmadığını bilmek, kullanıcının isteği
+güvenle tekrar edip edemeyeceğini belirler.
+
+**Aracın gerekçesi.** Kategori eşleşmemesi gibi açıklamalar araçta üretiliyor ama
+yalnızca karar günlüğüne yazılıyordu; sohbete genel hata metni düşüyordu. Araçlar
+artık kullanıcıya gösterilecek hataları `"business": true` ile işaretliyor; plan
+yürütücüsü bu metni doğrudan cevaba taşıyor ve `retryable: False` ile boşuna onarım
+turunu engelliyor.
+
+Ders: bir hatanın *nereden geldiği* kadar *kime ait olduğu* da sınıflandırılmalıdır.
+İşletim durumu kullanıcıya aittir ve gerekçesiyle söylenir; program hatası
+geliştiriciye aittir ve takip koduyla kaydedilir.
 
 ### Ağ geçidi zaman aşımı model zaman aşımından büyük olmalı
 

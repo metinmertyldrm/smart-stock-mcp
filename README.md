@@ -90,6 +90,20 @@ Default host-facing endpoints:
 
 The normal Docker `stock-service` and `llm-host` containers do **not** publish host ports. Browser traffic enters through the web gateway. The default development topology keeps anonymous bearer-session compatibility for LLM conversation isolation. Production uses a separate, stricter local-identity cookie/CSRF contract described below.
 
+In the anonymous development default the server does not assign a role, so there is
+no login screen and no logout button; every action the backend allows is available.
+To exercise named accounts, roles and the logout flow locally, set these in `.env`
+before starting the stack:
+
+```text
+LLM_AUTH_MODE=local
+LLM_BOOTSTRAP_ADMIN_USERNAME=<admin-username>
+LLM_BOOTSTRAP_ADMIN_PASSWORD=<strong-random-password>
+```
+
+The first `ADMIN` is created only while the identity store is still empty. `.env` is
+git-ignored; never commit these values.
+
 Run in the background:
 
 ```bash
@@ -332,6 +346,26 @@ npm run dev
 ```
 
 Never put secrets in `VITE_*` variables because they are exposed to the browser bundle. The manual Vite topology talks directly to the local Spring read endpoints, so do not expose that Spring port to untrusted clients.
+
+## Tests
+
+The unit and integration suite needs neither Ollama nor a running stack. Fake MCP
+modules are provided, so it also runs where the `mcp` package is not installed.
+
+```bash
+python -m unittest discover -s llm-host -p "test_*.py"   # 360 tests, ~9 s
+python llm-host/golden_eval.py                            # plan contract, seconds
+cd web-ui && npm test                                     # frontend unit tests
+```
+
+`golden_eval.py` checks the model-free part of the same behaviour contract — fast
+path, plan parsing and state gates — so it can run on every change and in CI, while
+the acceptance runner below needs a real stack and about an hour.
+
+Two AST guards run inside the suite because their mistake was made twice:
+`test_mcp_stdout.py` (MCP servers must not write to stdout, which is the JSON-RPC
+channel) and `test_store_connections.py` (SQLite connections must be closed —
+`with sqlite3.connect(...)` manages the transaction, not the connection).
 
 ## Isolated acceptance runner
 
