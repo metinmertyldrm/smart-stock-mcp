@@ -6,6 +6,7 @@ model list_low_stock'u category={"type": "string"} ile cagirdi. Sema
 reddetti ve plan ilk adimda durdu. Kullanici hicbir kategori soylememisti;
 deger kullanicidan gelen bir kisit degil, semanin kopyasiydi.
 """
+import os
 import unittest
 
 from test_support import install_optional_stubs
@@ -13,6 +14,9 @@ from test_support import install_optional_stubs
 install_optional_stubs()
 
 from plan_execution import drop_schema_echo_arguments, is_schema_stub  # noqa: E402
+
+# Kaynagi okuyan denetim, calisma dizinine degil kendi konumuna dayanmali.
+HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 class SchemaStubTest(unittest.TestCase):
@@ -52,7 +56,7 @@ class DropSchemaEchoTest(unittest.TestCase):
 
     def test_runs_before_the_tool_call(self):
         """Temizleyici argüman hattinda cagrilmali, yoksa hicbir ise yaramaz."""
-        with open("plan_execution.py", encoding="utf-8") as handle:
+        with open(os.path.join(HERE, "plan_execution.py"), encoding="utf-8") as handle:
             source = handle.read()
         self.assertIn("arguments = drop_schema_echo_arguments(arguments)", source)
         self.assertLess(

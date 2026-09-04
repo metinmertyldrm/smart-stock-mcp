@@ -10,6 +10,7 @@ aradi. Aciklama karar gunlugunde duruyordu, sohbette yoktu.
 import ast
 import io
 import json
+import os
 import unittest
 
 from test_support import install_optional_stubs
@@ -17,6 +18,11 @@ from test_support import install_optional_stubs
 install_optional_stubs()
 
 from plan_execution import normalize_tool_result  # noqa: E402
+
+# Kaynagi okuyan denetim, calisma dizinine degil kendi konumuna dayanmali;
+# aksi halde depo kokunden calistirildiginda dosyayi bulamaz.
+HERE = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.dirname(HERE)
 
 
 class BusinessFlagTest(unittest.TestCase):
@@ -44,14 +50,15 @@ class FailureBranchTest(unittest.TestCase):
 
     def test_both_paths_promote_business_errors(self):
         for name in self.FILES:
-            with io.open(name, encoding="utf-8") as handle:
+            with io.open(os.path.join(HERE, name), encoding="utf-8") as handle:
                 source = handle.read()
             self.assertIn('if normalized.get("business"):', source, name)
             self.assertIn('failure["business_reason"] = tool_error', source, name)
             self.assertIn('failure["retryable"] = False', source, name)
 
     def test_category_error_marks_itself_as_business(self):
-        with io.open("../stock-mcp/tools.py", encoding="utf-8") as handle:
+        tools_path = os.path.join(BASE_DIR, "stock-mcp", "tools.py")
+        with io.open(tools_path, encoding="utf-8") as handle:
             tree = ast.parse(handle.read())
         target = next(
             node for node in ast.walk(tree)
